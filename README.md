@@ -132,6 +132,23 @@ python -m pytest tests/ -v --tb=short
 
 ---
 
+## Threat Model & Security Boundaries
+
+AgentBlackBox is an **observability & forensic flight recorder** designed to capture what autonomous coding agents do on a developer machine. Like user-space audit daemons, it operates under explicit security boundaries:
+
+### What AgentBlackBox Solves (In Scope)
+- **Accidental & Runaway Damage:** Catches accidental recursive file deletions, unauthorized `.env` modifications, runaway git resets, and mass edits.
+- **Accidental Secret Leaks (Best-Effort):** 14 regex provider signatures + Shannon entropy redact sensitive tokens (`[REDACTED:<type>]`) before payloads or file snapshots are written to SQLite or blob disk.
+- **Forensic Reconstruction:** Provides full timeline replay, reverse-chronological file blame, and verifiable event sequences for post-mortems.
+- **Opportunistic & Naive Tampering:** A cryptographic SHA-256 linear hash chain detects SQLite row modifications, event tampering, out-of-order mutations, and middle-of-chain deletions via `abb verify <session_id>`.
+
+### Explicit Limitations & Out-of-Scope (Roadmap)
+- **Adversarial Same-UID Agent:** If a malicious agent runs as the same OS user without sandboxing (Docker, devcontainer, or microVM), it has filesystem write access to `.agentblackbox/`. An active adversary could recompute hashes or truncate tail events. *(Mitigations on roadmap: HMAC signatures via out-of-process keystore, signed head checkpoints, and root/daemon privilege separation).*
+- **Heuristic Redaction is Best-Effort:** Regex + Shannon entropy detects high-entropy and standard provider tokens. Custom split tokens, base64-obfuscated keys, or non-standard formats are not guaranteed to be caught.
+- **Attribution Depth:** Claude Code is monitored via structured `.claude/settings.local.json` `PreToolUse` hooks; generic terminal tools are monitored via `abb run` wrappers. IDE extensions without hook interfaces (Cursor, Cline) are currently tracked via time-correlated filesystem and git events.
+
+---
+
 ## Part of the AI Agent Safety Suite
 
 | Tool | Purpose |
