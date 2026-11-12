@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+dist/
+build/
+wheels/
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+.env
+.env.*
+
+# Testing & caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# AgentBlackBox runtime data
+.agentblackbox/
+*.db
+*.db-wal
+*.db-shm
+blackbox_report_*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
