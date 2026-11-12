@@ -2,6 +2,7 @@
 
 import fnmatch
 import hashlib
+import sys
 import time
 from pathlib import Path
 from threading import Timer
@@ -16,6 +17,7 @@ from watchdog.events import (
     FileSystemEventHandler,
 )
 from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver
 
 from agentblackbox.storage.blob_store import BlobStore
 from agentblackbox.storage.models import Event, EventType, Severity
@@ -227,6 +229,8 @@ class FileSystemWatcher(BaseWatcher):
         max_file_size: int = 1_048_576,
         blob_store: Optional[BlobStore] = None,
         agent_id: Optional[str] = None,
+        use_polling: Optional[bool] = None,
+        poll_interval: float = 0.2,
     ) -> None:
         super().__init__(session_id, on_event)
         self.watch_path = watch_path
@@ -240,7 +244,8 @@ class FileSystemWatcher(BaseWatcher):
             blob_store=blob_store,
             agent_id=agent_id,
         )
-        self._observer = Observer()
+        polling = (sys.platform == "win32") if use_polling is None else use_polling
+        self._observer = PollingObserver(timeout=poll_interval) if polling else Observer()
 
     def start(self) -> None:
         """Start watching the directory tree."""

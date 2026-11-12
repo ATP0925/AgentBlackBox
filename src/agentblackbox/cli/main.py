@@ -2,8 +2,11 @@
 
 import os
 import secrets
+import shlex
+import subprocess
+import sys
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import typer
 import uvicorn
@@ -12,8 +15,15 @@ from rich.table import Table
 
 from agentblackbox import __version__
 from agentblackbox.daemon.config import BlackBoxConfig
+from agentblackbox.daemon.core import (
+    get_daemon_state,
+    start_background_daemon,
+    stop_background_daemon,
+)
 from agentblackbox.storage.event_store import EventStore
 from agentblackbox.storage.models import Session
+from agentblackbox.watchers.agent_hooks import install_claude_hook
+from agentblackbox.watchers.terminal import run_recorded_command
 
 app = typer.Typer(
     name="abb",
@@ -41,35 +51,54 @@ def start(
     name: Optional[str] = typer.Option(None, "--name", "-n", help="Session name"),
     agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Agent hint (cursor, claude-code, etc.)"),
     workspace: Optional[Path] = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
+    no_daemon: bool = typer.Option(False, "--no-daemon", help="Create session record only without background watcher"),
 ) -> None:
-    """Start a new recording session."""
+    """Start a live background recording session."""
     ws = workspace or Path.cwd()
     config = BlackBoxConfig(workspace_path=ws)
-    store = EventStore(config.db_path)
 
-    session = Session(
-        workspace_path=str(ws),
-        name=name,
-        agent_hint=agent,
-    )
-    store.create_session(session)
+    if no_daemon:
+        store = EventStore(config.db_path)
+        session = Session(workspace_path=str(ws), name=name, agent_hint=agent)
+        store.create_session(session)
+        console.print(f"[bold green]🔴 Session created (no-daemon)[/]: [cyan]{session.id}[/]")
+        return
 
-    console.print(f"[bold green]🔴 Recording started[/]")
-    console.print(f"  Session: [cyan]{session.id}[/]")
+    try:
+        state = start_background_daemon(config, name=name, agent_hint=agent)
+    except RuntimeError as exc:
+        console.print(f"[red]Error: {exc}[/]")
+        raise typer.Exit(1)
+
+    console.print("[bold green]🔴 Live recording started[/]")
+    console.print(f"  Session:   [cyan]{state.session_id}[/]")
+    console.print(f"  PID:       {state.pid}")
     console.print(f"  Workspace: {ws}")
     if name:
-        console.print(f"  Name: {name}")
-    console.print(f"\n  Run [bold]abb stop[/] to end recording.")
+        console.print(f"  Name:      {name}")
+    console.print("\n  Run [bold]abb stop[/] to end recording.")
 
 
 @app.command()
 def stop(
-    session_id: Optional[str] = typer.Argument(None, help="Session ID to stop (latest if omitted)"),
+    session_id: Optional[str] = typer.Argument(None, help="Session ID to stop (latest/active if omitted)"),
     workspace: Optional[Path] = typer.Option(None, "--workspace", "-w"),
 ) -> None:
-    """Stop a recording session."""
-    store = _get_store(workspace)
+    """Stop the live recording daemon and session."""
+    ws = workspace or Path.cwd()
+    config = BlackBoxConfig(workspace_path=ws)
 
+    active_state = get_daemon_state(config)
+    if active_state and (not session_id or active_state.session_id == session_id):
+        stopped_state = stop_background_daemon(config)
+        if stopped_state:
+            console.print(
+                f"[bold yellow]⏹️ Daemon (PID {stopped_state.pid}) & session "
+                f"{stopped_state.session_id} stopped.[/]"
+            )
+            return
+
+    store = _get_store(ws)
     if session_id:
         store.stop_session(session_id)
         console.print(f"[bold yellow]⏹️ Session {session_id} stopped.[/]")
@@ -80,6 +109,95 @@ def stop(
             console.print(f"[bold yellow]⏹️ Session {sessions[0].id} stopped.[/]")
         else:
             console.print("[red]No active recording session found.[/]")
+            raise typer.Exit(1)
+
+
+@app.command()
+def status(
+    workspace: Optional[Path] = typer.Option(None, "--workspace", "-w"),
+) -> None:
+    """Show whether a background recording daemon is active."""
+    ws = workspace or Path.cwd()
+    config = BlackBoxConfig(workspace_path=ws)
+    state = get_daemon_state(config)
+    if not state:
+        console.print("[dim]No active AgentBlackBox daemon running in this workspace.[/]")
+        return
+
+    store = EventStore(config.db_path)
+    session = store.get_session(state.session_id)
+    events_count = session.total_events if session else 0
+    console.print("[bold green]🟢 Daemon ACTIVE[/]")
+    console.print(f"  Session:   [cyan]{state.session_id}[/]")
+    console.print(f"  PID:       {state.pid}")
+    console.print(f"  Events:    {events_count}")
+    console.print(f"  Workspace: {state.workspace_path}")
+
+
+@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+def run(
+    command: List[str] = typer.Argument(..., help="Command and arguments to execute and record"),
+    agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Agent identifier"),
+    session_id: Optional[str] = typer.Option(None, "--session", "-s", help="Session ID (uses active if omitted)"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", "-w"),
+) -> None:
+    """Execute a command while recording stdin/stdout, exit code, and attribution."""
+    ws = workspace or Path.cwd()
+    config = BlackBoxConfig(workspace_path=ws)
+    store = EventStore(config.db_path)
+
+    target_sid = session_id
+    auto_created = False
+    if not target_sid:
+        state = get_daemon_state(config)
+        if state:
+            target_sid = state.session_id
+        else:
+            existing = store.list_sessions(limit=1)
+            if existing and existing[0].status == "recording":
+                target_sid = existing[0].id
+            else:
+                sess = Session(workspace_path=str(ws), name="abb-run", agent_hint=agent)
+                store.create_session(sess)
+                target_sid = sess.id
+                auto_created = True
+
+    if len(command) == 1:
+        cmd_str = command[0]
+    elif sys.platform == "win32":
+        cmd_str = subprocess.list2cmdline(command)
+    else:
+        cmd_str = shlex.join(command)
+    result = run_recorded_command(
+        store=store,
+        session_id=target_sid,
+        command=cmd_str,
+        workspace=ws,
+        agent_id=agent,
+    )
+    if auto_created:
+        store.stop_session(target_sid)
+
+    if result.stdout:
+        console.print(result.stdout, end="")
+    if result.stderr:
+        console.print(f"[red]{result.stderr}[/]", end="")
+    if result.exit_code != 0:
+        raise typer.Exit(1)
+
+
+@app.command("hook-install")
+def hook_install(
+    agent: str = typer.Option("claude-code", "--agent", "-a", help="Target agent (claude-code)"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", "-w"),
+) -> None:
+    """Install agent attribution hooks (e.g., Claude Code PreToolUse hook)."""
+    ws = workspace or Path.cwd()
+    if agent.lower() != "claude-code":
+        console.print(f"[red]Unsupported agent '{agent}'. Currently supported: claude-code[/]")
+        raise typer.Exit(1)
+    path = install_claude_hook(ws)
+    console.print(f"[bold green]✅ Installed Claude Code hook[/] at [cyan]{path}[/]")
 
 
 @app.command()
@@ -96,7 +214,7 @@ def sessions(
         return
 
     table = Table(title="🔴 Recording Sessions")
-    table.add_column("ID", style="cyan")
+    table.add_column("ID", style="cyan", no_wrap=True)
     table.add_column("Name")
     table.add_column("Status")
     table.add_column("Events", justify="right")

@@ -55,3 +55,4 @@ class TestRedactPayloadAndBytes:
         out, matches = redact_bytes(binary)
         assert out == binary
         assert matches == []
+

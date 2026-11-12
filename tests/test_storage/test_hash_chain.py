@@ -148,3 +148,4 @@ class TestHashChainAndAttribution:
         ))
         assert ev.seq == 1
         assert store.verify_chain(sess.id).valid is True
+

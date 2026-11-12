@@ -74,3 +74,4 @@ class TestApiAuthAndVerify:
         with client.websocket_connect("/ws/live?token=test-secret-token-123") as ws:
             ws.send_text("ping")
             assert ws.receive_json() == {"type": "pong"}
+

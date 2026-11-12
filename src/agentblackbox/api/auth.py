@@ -76,3 +76,4 @@ def verify_ws_token(websocket: WebSocket) -> bool:
         return hmac.compare_digest(query_token, expected)
 
     return False
+

@@ -92,3 +92,4 @@ class BlobStore:
             return raw.decode("utf-8")
         except UnicodeDecodeError:
             return None
+
