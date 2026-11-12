@@ -4,7 +4,7 @@
 
 > Every autonomous system needs a black box.
 
-**Status:** `v0.1.0` (Early Alpha — core storage, analysis, replay, CLI, and REST/WebSocket API built; 66 tests passing. Live background daemon & terminal/git hooks are in `v0.2`.)
+**Status:** `v0.1.0` → `v0.2` P0 Security & Integrity landed (85 tests passing. Live background daemon & terminal/git hooks are next in `v0.2` P1.)
 
 ---
 
@@ -18,23 +18,24 @@ AgentBlackBox is designed to record OS-level agent actions on the developer mach
 
 ## Feature Status (Built vs Planned)
 
-### ✅ Implemented in `v0.1.0`
-- 📁 **FileSystem Watcher (`watchers/filesystem.py`)** — Tracks file create, modify, delete, rename via `watchdog` with debouncing and SHA-256 dedup
-- 🗄️ **SQLite Event Store (`storage/event_store.py`)** — WAL-mode persistence for sessions, events, and alerts with full-text search
+### ✅ Implemented (`v0.1` + `v0.2` P0)
+- 📁 **FileSystem Watcher (`watchers/filesystem.py`)** — Tracks file create, modify, delete, rename via `watchdog` with debouncing, SHA-256 dedup, and redacted blob snapshots
+- 🗄️ **SQLite Event Store (`storage/event_store.py`)** — WAL-mode persistence for sessions, events, `file_snapshots`, and alerts with attribution columns (`agent_id`, `pid`, `parent_event_id`)
+- 🔒 **Redact-First → Store-Later (`analysis/redactor.py`)** — Redacts secrets (`[REDACTED:<type>]`) from event payloads and file snapshots *before* hashing or writing to SQLite/disk
+- ⛓️ **Tamper-Evident Hash Chain (`verify_chain`, `abb verify`)** — Monotonic per-session `seq` + chained `prev_hash` / `event_hash` (SHA-256) to detect DB edits or deletions
+- 📦 **Content-Addressed Blob Store (`storage/blob_store.py`)** — Deduplicated, secret-redacted snapshots under `.agentblackbox/blobs/<sha256>`
 - 🔐 **Secret Detector (`analysis/secret_detector.py`)** — Detects API keys, tokens, passwords, private keys, and DB URLs (14 regex patterns + Shannon entropy + false-positive filtering)
 - ⚠️ **Risk Scorer & Pattern Matcher (`analysis/`)** — Deterministic `0.0–10.0` risk scoring and destructive command classification
 - ⏮️ **Timeline Builder & Blame (`replay/`)** — Chronological session timelines with relative ms offsets and reverse-chronological file blame
-- 💻 **CLI (`abb`)** — Session lifecycle (`start`, `stop`, `sessions`), `search`, `blame`, `alerts`, `report`, `version`
-- 🌐 **FastAPI + WebSocket API (`api/`)** — REST endpoints (`/api/v1/...`) and `/ws/live` WebSocket manager
+- 💻 **CLI (`abb`)** — Session lifecycle (`start`, `stop`, `sessions`), `verify`, `serve`, `search`, `blame`, `alerts`, `report`, `version`
+- 🌐 **FastAPI + WebSocket API (`api/`)** — Localhost REST endpoints (`/api/v1/...`), `/api/v1/sessions/{id}/verify`, `/ws/live`, and Bearer token auth (`ABB_API_TOKEN` / `abb serve`)
 - 📄 **Exporters (`storage/export.py`)** — Standalone JSON, CSV, and dark-theme HTML reports
 
-### 🚧 Planned in `v0.2.0`
-- ⛓️ **Integrity & Redaction** — Per-session `seq` counter, tamper-evident cryptographic hash chain, and payload secret redaction before disk write
+### 🚧 Planned in `v0.2` P1
 - 🌿 **Git Observer** — Capturing `git` state changes via `reference-transaction` hooks
-- 🔄 **Live Daemon & Terminal Logger** — Wiring `abb start` to spawn the background watcher daemon + shell/process logging + agent attribution hooks (e.g., Claude Code hooks)
-- 🔒 **API Token Auth** — Optional bearer token protection for local dashboard/API access
+- 🔄 **Live Daemon & Terminal Logger** — Wiring `abb start` to spawn the background watcher daemon + `abb run` command wrapper + agent attribution hooks (e.g., Claude Code hooks)
 
-> **Note on `abb start` in `v0.1.0`:** Currently `abb start` creates and tracks the session record in SQLite; `FileSystemWatcher` runs via the Python module/API and is not yet auto-daemonized by `abb start`.
+> **Note on `abb start`:** Currently `abb start` creates and tracks the session record in SQLite; `FileSystemWatcher` + `BlobStore` run via the Python module/API and will be auto-daemonized in `v0.2` P1.
 
 ---
 
@@ -81,6 +82,8 @@ abb report sess-abc123def --format html
 | `abb blame <file>` | ✅ | Show file change history |
 | `abb alerts` | ✅ | Show unacknowledged security alerts |
 | `abb report <session_id>` | ✅ | Export session report (`json`, `csv`, `html`) |
+| `abb verify <session_id>` | ✅ | Verify tamper-evident event hash chain |
+| `abb serve` | ✅ | Start local API on `127.0.0.1` with bearer token auth |
 | `abb version` | ✅ | Show version |
 
 ---
@@ -114,7 +117,7 @@ uvicorn agentblackbox.api.main:app --host 127.0.0.1 --port 7700
 python -m pytest tests/ -v --tb=short
 ```
 
-Currently **66 tests** pass across storage, filesystem watcher, secret detection, risk scoring, timeline, blame, and FastAPI routes.
+Currently **85 tests** pass across storage, hash chain, blob store, redaction, filesystem watcher, secret detection, risk scoring, timeline, blame, API auth, and FastAPI routes.
 
 ---
 

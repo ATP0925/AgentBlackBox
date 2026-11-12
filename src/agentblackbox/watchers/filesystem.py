@@ -17,6 +17,7 @@ from watchdog.events import (
 )
 from watchdog.observers import Observer
 
+from agentblackbox.storage.blob_store import BlobStore
 from agentblackbox.storage.models import Event, EventType, Severity
 from agentblackbox.watchers.base import BaseWatcher
 
@@ -80,6 +81,8 @@ class _DebouncedHandler(FileSystemEventHandler):
         ignore_patterns: List[str],
         debounce_seconds: float = 0.5,
         max_file_size: int = 1_048_576,
+        blob_store: Optional[BlobStore] = None,
+        agent_id: Optional[str] = None,
     ) -> None:
         super().__init__()
         self.session_id = session_id
@@ -87,11 +90,13 @@ class _DebouncedHandler(FileSystemEventHandler):
         self.ignore_patterns = ignore_patterns
         self.debounce_seconds = debounce_seconds
         self.max_file_size = max_file_size
+        self.blob_store = blob_store
+        self.agent_id = agent_id
         self._timers: Dict[str, Timer] = {}
         self._last_hashes: Dict[str, str] = {}
 
     def _debounced_emit(self, path: str, event_type: str) -> None:
-        """Emit an event after debounce period, deduplicating by content hash."""
+        """Emit an event after debounce period, saving a redacted blob snapshot."""
         file_path = Path(path)
 
         # Skip directories
@@ -115,22 +120,44 @@ class _DebouncedHandler(FileSystemEventHandler):
 
         # Determine severity
         severity = Severity.INFO
+        risk_score = 0.0
         tags: List[str] = []
+        blob_hash: Optional[str] = None
+        file_size = file_path.stat().st_size if file_path.exists() else 0
 
         if any(s in path.lower() for s in [".env", "secret", "credential", "token", ".pem", ".key"]):
             severity = Severity.WARNING
             tags.append("sensitive_file")
+
+        # Save redacted file snapshot into BlobStore for create/modify
+        if (
+            self.blob_store is not None
+            and event_type in (EventType.FILE_CREATE, EventType.FILE_MODIFY)
+            and file_path.exists()
+        ):
+            try:
+                raw_bytes = file_path.read_bytes()
+                blob_hash, file_size, matches = self.blob_store.put_bytes(raw_bytes, redact=True)
+                if matches:
+                    severity = Severity.CRITICAL
+                    risk_score = 8.0
+                    tags.extend(["secret", "secret_redacted"])
+            except OSError:
+                pass
 
         event = Event(
             session_id=self.session_id,
             event_type=event_type,
             source_path=path,
             severity=severity,
+            risk_score=risk_score,
+            agent_id=self.agent_id,
+            blob_hash=blob_hash,
             payload={
-                "file_size": file_path.stat().st_size if file_path.exists() else 0,
+                "file_size": file_size,
                 "content_hash": self._last_hashes.get(path, ""),
             },
-            tags=tags,
+            tags=list(dict.fromkeys(tags)),
         )
         self.on_event(event)
 
@@ -198,6 +225,8 @@ class FileSystemWatcher(BaseWatcher):
         ignore_patterns: Optional[List[str]] = None,
         debounce_seconds: float = 0.5,
         max_file_size: int = 1_048_576,
+        blob_store: Optional[BlobStore] = None,
+        agent_id: Optional[str] = None,
     ) -> None:
         super().__init__(session_id, on_event)
         self.watch_path = watch_path
@@ -208,6 +237,8 @@ class FileSystemWatcher(BaseWatcher):
             ignore_patterns=self.ignore_patterns,
             debounce_seconds=debounce_seconds,
             max_file_size=max_file_size,
+            blob_store=blob_store,
+            agent_id=agent_id,
         )
         self._observer = Observer()
 

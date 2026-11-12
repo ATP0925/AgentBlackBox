@@ -1,4 +1,4 @@
-"""Data models for AgentBlackBox events and sessions."""
+"""Data models for AgentBlackBox events, sessions, snapshots, and alerts."""
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -28,6 +28,37 @@ def _hash_payload(payload: dict) -> str:
         Hex digest string.
     """
     raw = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _compute_event_hash(event: "Event") -> str:
+    """Compute SHA256 hash chaining this event to its predecessor.
+
+    Includes sequence number, timestamp, event metadata, payload hash,
+    attribution fields, blob reference, and ``prev_hash``.
+
+    Args:
+        event: Event with ``seq``, ``prev_hash``, and ``payload_hash`` populated.
+
+    Returns:
+        Hex digest string.
+    """
+    canonical = {
+        "session_id": event.session_id,
+        "seq": event.seq,
+        "timestamp": event.timestamp,
+        "event_type": event.event_type,
+        "severity": event.severity,
+        "risk_score": round(float(event.risk_score), 4),
+        "source_path": event.source_path,
+        "payload_hash": event.payload_hash,
+        "prev_hash": event.prev_hash,
+        "agent_id": event.agent_id,
+        "pid": event.pid,
+        "parent_event_id": event.parent_event_id,
+        "blob_hash": event.blob_hash,
+    }
+    raw = json.dumps(canonical, sort_keys=True, default=str)
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -85,6 +116,13 @@ class Event:
         tags: List of string tags for categorization.
         id: Auto-assigned database row ID.
         payload_hash: SHA256 of payload for integrity.
+        seq: Monotonic per-session sequence number (1-indexed once stored).
+        prev_hash: Hash of previous event in session (``GENESIS`` for seq 1).
+        event_hash: SHA256 chain hash of this event.
+        agent_id: Attributed agent identifier (e.g., ``claude-code``, ``cursor``).
+        pid: Process ID attributed to the event.
+        parent_event_id: Parent event ID linking file/git mutations to commands.
+        blob_hash: SHA256 content hash in BlobStore if a snapshot was saved.
     """
 
     session_id: str
@@ -97,11 +135,60 @@ class Event:
     tags: List[str] = field(default_factory=list)
     id: Optional[int] = None
     payload_hash: str = ""
+    seq: int = 0
+    prev_hash: str = ""
+    event_hash: str = ""
+    agent_id: Optional[str] = None
+    pid: Optional[int] = None
+    parent_event_id: Optional[int] = None
+    blob_hash: Optional[str] = None
 
     def __post_init__(self) -> None:
         """Compute payload hash after init."""
         if not self.payload_hash and self.payload:
             self.payload_hash = _hash_payload(self.payload)
+
+
+@dataclass
+class FileSnapshot:
+    """Metadata linking an event to a content-addressed file blob.
+
+    Attributes:
+        session_id: Parent session ID.
+        file_path: Path of the snapshotted file.
+        blob_hash: SHA256 digest in BlobStore.
+        size_bytes: Size of stored (redacted) blob in bytes.
+        event_id: Database ID of the triggering event.
+        timestamp: ISO 8601 UTC timestamp.
+        id: Auto-assigned database row ID.
+    """
+
+    session_id: str
+    file_path: str
+    blob_hash: str
+    size_bytes: int = 0
+    event_id: Optional[int] = None
+    timestamp: str = field(default_factory=_utcnow)
+    id: Optional[int] = None
+
+
+@dataclass
+class ChainVerificationResult:
+    """Result of verifying a session's tamper-evident event hash chain.
+
+    Attributes:
+        session_id: Verified session identifier.
+        valid: True if every event passes sequence, payload, and hash-chain checks.
+        total_events: Number of events checked.
+        broken_at_seq: Sequence number where verification first failed, if any.
+        reason: Human-readable explanation when invalid.
+    """
+
+    session_id: str
+    valid: bool
+    total_events: int = 0
+    broken_at_seq: Optional[int] = None
+    reason: Optional[str] = None
 
 
 @dataclass
@@ -157,4 +244,3 @@ class Alert:
     acknowledged: bool = False
     created_at: str = field(default_factory=_utcnow)
     id: Optional[int] = None
-

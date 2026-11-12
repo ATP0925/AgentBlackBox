@@ -9,6 +9,7 @@ import os
 
 # Default ignore patterns — files/dirs we never watch
 DEFAULT_IGNORE_PATTERNS: List[str] = [
+    ".agentblackbox",
     "__pycache__",
     "*.pyc",
     ".git",
@@ -44,16 +45,22 @@ class BlackBoxConfig:
 
     workspace_path: Path = field(default_factory=Path.cwd)
     db_path: Optional[Path] = None
+    blobs_dir: Optional[Path] = None
     ignore_patterns: List[str] = field(default_factory=lambda: list(DEFAULT_IGNORE_PATTERNS))
     max_file_size_bytes: int = 1_048_576  # 1 MB
     debounce_ms: int = 500
     dashboard_port: int = 7700
     log_level: str = "INFO"
+    api_token: Optional[str] = None
 
     def __post_init__(self) -> None:
         """Set derived defaults after init."""
         if self.db_path is None:
             self.db_path = self.workspace_path / ".agentblackbox" / "blackbox.db"
+        if self.blobs_dir is None:
+            self.blobs_dir = self.workspace_path / ".agentblackbox" / "blobs"
+        if self.api_token is None:
+            self.api_token = os.environ.get("ABB_API_TOKEN")
 
     @classmethod
     def from_file(cls, path: Path) -> "BlackBoxConfig":

@@ -87,3 +87,20 @@ async def stop_session(session_id: str) -> SessionResponse:
     updated = store.get_session(session_id)
     return _session_to_response(updated)
 
+
+@router.get("/sessions/{session_id}/verify")
+async def verify_session_chain(session_id: str) -> dict:
+    """Verify hash-chain integrity for a recording session."""
+    store = _get_store()
+    session = store.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    res = store.verify_chain(session_id)
+    return {
+        "session_id": res.session_id,
+        "valid": res.valid,
+        "total_events": res.total_events,
+        "broken_at_seq": res.broken_at_seq,
+        "reason": res.reason,
+    }
+

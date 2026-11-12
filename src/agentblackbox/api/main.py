@@ -1,14 +1,11 @@
 """FastAPI application for the AgentBlackBox dashboard API."""
 
-from pathlib import Path
-from typing import Optional
-
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
-import json
 
 from agentblackbox import __version__
+from agentblackbox.api.auth import require_api_token, verify_ws_token
 
 app = FastAPI(
     title="AgentBlackBox API",
@@ -18,17 +15,19 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["http://127.0.0.1", "http://localhost"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PATCH"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
-# Import routes
+# Import routes with optional bearer-token protection
 from agentblackbox.api.routes import sessions, events, timeline  # noqa: E402
-app.include_router(sessions.router, prefix="/api/v1", tags=["sessions"])
-app.include_router(events.router, prefix="/api/v1", tags=["events"])
-app.include_router(timeline.router, prefix="/api/v1", tags=["timeline"])
+
+_auth_deps = [Depends(require_api_token)]
+app.include_router(sessions.router, prefix="/api/v1", tags=["sessions"], dependencies=_auth_deps)
+app.include_router(events.router, prefix="/api/v1", tags=["events"], dependencies=_auth_deps)
+app.include_router(timeline.router, prefix="/api/v1", tags=["timeline"], dependencies=_auth_deps)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -46,7 +45,6 @@ async def root() -> str:
     """
 
 
-# WebSocket manager for live event feeds
 class ConnectionManager:
     """Manages WebSocket connections for live event streaming."""
 
@@ -54,13 +52,17 @@ class ConnectionManager:
         self.active_connections: list[WebSocket] = []
 
     async def connect(self, websocket: WebSocket) -> None:
+        """Accept and track an authenticated WebSocket client."""
         await websocket.accept()
         self.active_connections.append(websocket)
 
     def disconnect(self, websocket: WebSocket) -> None:
-        self.active_connections.remove(websocket)
+        """Remove a disconnected WebSocket client."""
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
 
     async def broadcast(self, message: dict) -> None:
+        """Broadcast JSON message to all connected clients."""
         for connection in self.active_connections:
             try:
                 await connection.send_json(message)
@@ -74,13 +76,15 @@ ws_manager = ConnectionManager()
 @app.websocket("/ws/live")
 async def websocket_live(websocket: WebSocket) -> None:
     """WebSocket endpoint for real-time event streaming."""
+    if not verify_ws_token(websocket):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     await ws_manager.connect(websocket)
     try:
         while True:
             data = await websocket.receive_text()
-            # Client can send ping/pong or filter requests
             if data == "ping":
                 await websocket.send_json({"type": "pong"})
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
-

@@ -72,7 +72,7 @@ class TestFileSystemWatcher:
         )
         watcher.start()
         try:
-            time.sleep(0.2)
+            time.sleep(0.3)
             (tmp_path / "new_file.py").write_text("hello")
             deadline = time.monotonic() + 2.0
             while time.monotonic() < deadline and not any(

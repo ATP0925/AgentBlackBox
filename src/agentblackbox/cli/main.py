@@ -1,9 +1,12 @@
 """CLI entry point for AgentBlackBox (`abb` command)."""
 
+import os
+import secrets
 from pathlib import Path
 from typing import Optional
 
 import typer
+import uvicorn
 from rich.console import Console
 from rich.table import Table
 
@@ -247,3 +250,45 @@ def alerts(
         )
 
     console.print(table)
+
+
+@app.command()
+def verify(
+    session_id: str = typer.Argument(..., help="Session ID to verify hash-chain integrity"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", "-w"),
+) -> None:
+    """Verify tamper-evident hash chain for a session."""
+    store = _get_store(workspace)
+    session = store.get_session(session_id)
+    if not session:
+        console.print(f"[red]Session '{session_id}' not found.[/]")
+        raise typer.Exit(1)
+
+    res = store.verify_chain(session_id)
+    if res.valid:
+        console.print(
+            f"[bold green]✅ Chain INTACT[/] for [cyan]{session_id}[/] "
+            f"({res.total_events} events verified)"
+        )
+    else:
+        console.print(
+            f"[bold red]❌ TAMPERING DETECTED[/] in [cyan]{session_id}[/] "
+            f"at seq={res.broken_at_seq}: {res.reason}"
+        )
+        raise typer.Exit(1)
+
+
+@app.command()
+def serve(
+    port: int = typer.Option(7700, "--port", "-p", help="Local port to bind"),
+    no_auth: bool = typer.Option(False, "--no-auth", help="Disable bearer token auth"),
+) -> None:
+    """Start the local AgentBlackBox API server bound to 127.0.0.1."""
+    if not no_auth and not os.environ.get("ABB_API_TOKEN"):
+        token = secrets.token_urlsafe(24)
+        os.environ["ABB_API_TOKEN"] = token
+        console.print(f"[bold yellow]🔒 Generated local API token:[/] [cyan]{token}[/]")
+        console.print("   Pass header: [dim]Authorization: Bearer <token>[/]")
+
+    console.print(f"[bold green]🚀 Starting AgentBlackBox API[/] on http://127.0.0.1:{port}")
+    uvicorn.run("agentblackbox.api.main:app", host="127.0.0.1", port=port)
