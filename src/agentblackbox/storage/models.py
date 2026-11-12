@@ -34,8 +34,10 @@ def _hash_payload(payload: dict) -> str:
 def _compute_event_hash(event: "Event") -> str:
     """Compute SHA256 hash chaining this event to its predecessor.
 
-    Includes sequence number, timestamp, event metadata, payload hash,
-    attribution fields, blob reference, and ``prev_hash``.
+    Canonical v2 hash covers sequence number, previous hash, session ID,
+    timestamp, event type, payload hash, source path, attribution fields
+    (agent_id, pid, parent_event_id), blob reference, severity, risk score,
+    and sorted tags. Uses deterministic JSON with sorted keys and tight separators.
 
     Args:
         event: Event with ``seq``, ``prev_hash``, and ``payload_hash`` populated.
@@ -44,22 +46,24 @@ def _compute_event_hash(event: "Event") -> str:
         Hex digest string.
     """
     canonical = {
-        "session_id": event.session_id,
+        "v": 2,
         "seq": event.seq,
+        "prev_hash": event.prev_hash,
+        "session_id": event.session_id,
         "timestamp": event.timestamp,
         "event_type": event.event_type,
-        "severity": event.severity,
-        "risk_score": round(float(event.risk_score), 4),
+        "payload_hash": event.payload_hash or "",
         "source_path": event.source_path,
-        "payload_hash": event.payload_hash,
-        "prev_hash": event.prev_hash,
         "agent_id": event.agent_id,
         "pid": event.pid,
         "parent_event_id": event.parent_event_id,
         "blob_hash": event.blob_hash,
+        "severity": str(event.severity),
+        "risk_score": round(float(event.risk_score), 4),
+        "tags": sorted(event.tags) if event.tags else [],
     }
-    raw = json.dumps(canonical, sort_keys=True, default=str)
-    return hashlib.sha256(raw.encode()).hexdigest()
+    raw = json.dumps(canonical, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 # ---------- Event Types ----------

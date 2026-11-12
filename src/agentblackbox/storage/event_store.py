@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS alerts (
 
 _INDEX_SCHEMA = """
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
-CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events(session_id, seq);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_events_session_seq_unique ON events(session_id, seq) WHERE seq > 0;
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
 CREATE INDEX IF NOT EXISTS idx_events_severity ON events(severity);
 CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
@@ -134,14 +134,22 @@ class EventStore:
                 conn.execute(f"ALTER TABLE events ADD COLUMN {col_name} {col_def}")
 
     @contextmanager
-    def _connect(self) -> Generator[sqlite3.Connection, None, None]:
+    def _connect(self, write: bool = False) -> Generator[sqlite3.Connection, None, None]:
         """Context manager for database connections.
+
+        Args:
+            write: If True, executes ``BEGIN IMMEDIATE`` to acquire an exclusive
+                write lock up front, eliminating concurrency races between parallel
+                watchers/processes.
 
         Yields:
             SQLite connection with row factory.
         """
         conn = sqlite3.connect(str(self.db_path), timeout=10)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 5000")
+        if write:
+            conn.execute("BEGIN IMMEDIATE")
         try:
             yield conn
             conn.commit()
@@ -282,7 +290,7 @@ class EventStore:
         Returns:
             Event with id, seq, prev_hash, and event_hash populated.
         """
-        with self._connect() as conn:
+        with self._connect(write=True) as conn:
             last_seq, prev_hash = self._get_chain_tip(conn, event.session_id)
             self._prepare_event(event, seq=last_seq + 1, prev_hash=prev_hash)
 
@@ -330,7 +338,7 @@ class EventStore:
         """
         if not events:
             return
-        with self._connect() as conn:
+        with self._connect(write=True) as conn:
             tips: Dict[str, Tuple[int, str]] = {}
             counts: Dict[str, int] = {}
             max_risks: Dict[str, float] = {}

@@ -6,7 +6,7 @@
 
 > Every autonomous system needs a black box.
 
-**Status:** `v0.2.0a1` (Live background daemon, redact-first storage, tamper-evident hash chain, content-addressed blob store, git & terminal recording, Claude Code attribution hooks, and localhost Bearer-auth API — **94 tests passing**.)
+**Status:** `v0.2.0a1` (Live background daemon, redact-first storage, tamper-evident hash chain, content-addressed blob store, git & terminal recording, Claude Code attribution hooks, and localhost Bearer-auth API — **100 tests passing**.)
 
 ---
 
@@ -128,7 +128,7 @@ ABB_API_TOKEN="<your-token>" uvicorn agentblackbox.api.main:app --host 127.0.0.1
 python -m pytest tests/ -v --tb=short
 ```
 
-**94 tests passing** across redactor, secret detection, risk scoring, hash chain & migration, blob store, filesystem watcher, git observer & hooks, terminal recorder, agent hooks, background daemon, timeline, blame, API auth, and FastAPI routes.
+**100 tests passing** across redactor, secret detection, risk scoring, hash chain & migration, blob store, filesystem watcher, git observer & hooks, terminal recorder, agent hooks, background daemon, timeline, blame, API auth, and FastAPI routes.
 
 ---
 
@@ -143,7 +143,7 @@ AgentBlackBox is an **observability & forensic flight recorder** designed to cap
 - **Opportunistic & Naive Tampering:** A cryptographic SHA-256 linear hash chain detects SQLite row modifications, event tampering, out-of-order mutations, and middle-of-chain deletions via `abb verify <session_id>`.
 
 ### Explicit Limitations & Out-of-Scope (Roadmap)
-- **Adversarial Same-UID Agent:** If a malicious agent runs as the same OS user without sandboxing (Docker, devcontainer, or microVM), it has filesystem write access to `.agentblackbox/`. An active adversary could recompute hashes or truncate tail events. *(Mitigations on roadmap: HMAC signatures via out-of-process keystore, signed head checkpoints, and root/daemon privilege separation).*
+- **Tail-Truncation & Same-UID Tampering:** If a malicious agent runs under the same OS user without container/VM sandboxing, it can write to `.agentblackbox/`. While middle-chain edits break hashes, deleting the tail of a session leaves the remaining sub-chain internally valid from `GENESIS`. Tail-truncation cannot be mathematically prevented locally without external head-hash anchoring (e.g. remote witness, RFC 3161 timestamping, or append-only signed checkpoints — planned for v0.3).
 - **Heuristic Redaction is Best-Effort:** Regex + Shannon entropy detects high-entropy and standard provider tokens. Custom split tokens, base64-obfuscated keys, or non-standard formats are not guaranteed to be caught.
 - **Attribution Depth:** Claude Code is monitored via structured `.claude/settings.local.json` `PreToolUse` hooks; generic terminal tools are monitored via `abb run` wrappers. IDE extensions without hook interfaces (Cursor, Cline) are currently tracked via time-correlated filesystem and git events.
 

@@ -149,3 +149,53 @@ class TestHashChainAndAttribution:
         assert ev.seq == 1
         assert store.verify_chain(sess.id).valid is True
 
+    def test_detects_attribution_or_metadata_tampering(
+        self, store: EventStore, sample_session: Session
+    ) -> None:
+        """Modifying agent_id, source_path, severity, or tags must invalidate the chain."""
+        store.create_session(sample_session)
+        e1 = store.insert_event(Event(
+            session_id=sample_session.id,
+            event_type=EventType.FILE_CREATE,
+            source_path="auth.py",
+            agent_id="claude-code",
+            tags=["auth", "critical"],
+        ))
+        assert store.verify_chain(sample_session.id).valid is True
+
+        # Attempt to spoof agent_id in SQLite directly
+        with sqlite3.connect(str(store.db_path)) as conn:
+            conn.execute("UPDATE events SET agent_id = 'developer' WHERE id = ?", (e1.id,))
+            conn.commit()
+
+        res = store.verify_chain(sample_session.id)
+        assert res.valid is False
+        assert res.broken_at_seq == 1
+        assert "event_hash mismatch" in (res.reason or "")
+
+    def test_concurrent_inserts_locked_without_race(
+        self, store: EventStore, sample_session: Session
+    ) -> None:
+        """Concurrent threads inserting into the same session must produce a continuous, valid chain."""
+        import concurrent.futures
+
+        store.create_session(sample_session)
+
+        def _worker(thread_id: int) -> None:
+            for i in range(10):
+                store.insert_event(Event(
+                    session_id=sample_session.id,
+                    event_type=EventType.CMD_EXECUTE,
+                    payload={"thread": thread_id, "step": i},
+                ))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(_worker, tid) for tid in range(4)]
+            for f in futures:
+                f.result()
+
+        res = store.verify_chain(sample_session.id)
+        assert res.valid is True
+        assert res.total_events == 40
+
+
