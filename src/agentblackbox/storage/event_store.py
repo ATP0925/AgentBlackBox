@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS alerts (
 """
 
 _INDEX_SCHEMA = """
+DROP INDEX IF EXISTS idx_events_session_seq;
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_events_session_seq_unique ON events(session_id, seq) WHERE seq > 0;
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
@@ -285,50 +286,66 @@ class EventStore:
     def insert_event(self, event: Event) -> Event:
         """Insert a single event with secret redaction and hash-chain linkage.
 
+        Acquires an exclusive write lock (BEGIN IMMEDIATE) up front.
+        Retries with backoff if SQLite encounters high concurrent contention.
+
         Args:
             event: Event to store.
 
         Returns:
             Event with id, seq, prev_hash, and event_hash populated.
         """
-        with self._connect(write=True) as conn:
-            last_seq, prev_hash = self._get_chain_tip(conn, event.session_id)
-            self._prepare_event(event, seq=last_seq + 1, prev_hash=prev_hash)
+        import random
+        import time
 
-            cursor = conn.execute(
-                """INSERT INTO events (session_id, seq, timestamp, event_type,
-                   severity, risk_score, source_path, payload, payload_hash,
-                   prev_hash, event_hash, agent_id, pid, parent_event_id,
-                   blob_hash, tags)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    event.session_id, event.seq, event.timestamp, event.event_type,
-                    event.severity, event.risk_score, event.source_path,
-                    json.dumps(event.payload), event.payload_hash,
-                    event.prev_hash, event.event_hash,
-                    event.agent_id, event.pid, event.parent_event_id,
-                    event.blob_hash, json.dumps(event.tags),
-                ),
-            )
-            event.id = cursor.lastrowid
+        last_err: Optional[Exception] = None
+        for attempt in range(5):
+            try:
+                with self._connect(write=True) as conn:
+                    last_seq, prev_hash = self._get_chain_tip(conn, event.session_id)
+                    self._prepare_event(event, seq=last_seq + 1, prev_hash=prev_hash)
 
-            if event.blob_hash and event.source_path:
-                conn.execute(
-                    """INSERT INTO file_snapshots (session_id, event_id, file_path,
-                       blob_hash, size_bytes, timestamp)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (
-                        event.session_id, event.id, event.source_path,
-                        event.blob_hash, int(event.payload.get("file_size", 0)),
-                        event.timestamp,
-                    ),
-                )
+                    cursor = conn.execute(
+                        """INSERT INTO events (session_id, seq, timestamp, event_type,
+                           severity, risk_score, source_path, payload, payload_hash,
+                           prev_hash, event_hash, agent_id, pid, parent_event_id,
+                           blob_hash, tags)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            event.session_id, event.seq, event.timestamp, event.event_type,
+                            event.severity, event.risk_score, event.source_path,
+                            json.dumps(event.payload), event.payload_hash,
+                            event.prev_hash, event.event_hash,
+                            event.agent_id, event.pid, event.parent_event_id,
+                            event.blob_hash, json.dumps(event.tags),
+                        ),
+                    )
+                    event.id = cursor.lastrowid
 
-            conn.execute(
-                """UPDATE sessions SET total_events = total_events + 1,
-                   risk_score = MAX(risk_score, ?) WHERE id = ?""",
-                (event.risk_score, event.session_id),
-            )
+                    if event.blob_hash and event.source_path:
+                        conn.execute(
+                            """INSERT INTO file_snapshots (session_id, event_id, file_path,
+                               blob_hash, size_bytes, timestamp)
+                               VALUES (?, ?, ?, ?, ?, ?)""",
+                            (
+                                event.session_id, event.id, event.source_path,
+                                event.blob_hash, int(event.payload.get("file_size", 0)),
+                                event.timestamp,
+                            ),
+                        )
+
+                    conn.execute(
+                        """UPDATE sessions SET total_events = total_events + 1,
+                           risk_score = MAX(risk_score, ?) WHERE id = ?""",
+                        (event.risk_score, event.session_id),
+                    )
+                return event
+            except (sqlite3.OperationalError, sqlite3.IntegrityError) as e:
+                last_err = e
+                time.sleep(0.02 * (2 ** attempt) + random.uniform(0.005, 0.02))
+
+        if last_err:
+            raise last_err
         return event
 
     def insert_events_batch(self, events: List[Event]) -> None:

@@ -263,5 +263,61 @@ class TestHashChainAndAttribution:
         assert res.valid is True
         assert res.total_events == 1
 
+    def test_multiprocess_concurrent_inserts_valid_chain(
+        self, tmp_path: Path
+    ) -> None:
+        """Multiple independent OS processes inserting concurrently must produce a clean linear chain."""
+        import subprocess
+        import sys
+
+        db_path = tmp_path / "multiprocess_test.db"
+        store = EventStore(db_path)
+        sess = Session(workspace_path=str(tmp_path), name="multiprocess-session")
+        store.create_session(sess)
+
+        worker_code = (
+            "import sys\n"
+            "from pathlib import Path\n"
+            "from agentblackbox.storage.event_store import EventStore\n"
+            "from agentblackbox.storage.models import Event, EventType\n"
+            "db_path = Path(sys.argv[1])\n"
+            "session_id = sys.argv[2]\n"
+            "proc_id = sys.argv[3]\n"
+            "count = int(sys.argv[4])\n"
+            "store = EventStore(db_path)\n"
+            "for i in range(count):\n"
+            "    store.insert_event(Event(\n"
+            "        session_id=session_id,\n"
+            "        event_type=EventType.CMD_EXECUTE,\n"
+            "        payload={'proc_id': proc_id, 'step': i},\n"
+            "        agent_id=f'worker-{proc_id}',\n"
+            "    ))\n"
+            "sys.exit(0)\n"
+        )
+
+        num_procs = 4
+        events_per_proc = 10
+        procs = []
+        for p_idx in range(num_procs):
+            cmd = [
+                sys.executable,
+                "-c",
+                worker_code,
+                str(db_path),
+                sess.id,
+                str(p_idx),
+                str(events_per_proc),
+            ]
+            procs.append(subprocess.Popen(cmd))
+
+        for p in procs:
+            exit_code = p.wait(timeout=20)
+            assert exit_code == 0
+
+        res = store.verify_chain(sess.id)
+        assert res.valid is True
+        assert res.total_events == num_procs * events_per_proc
+
+
 
 
