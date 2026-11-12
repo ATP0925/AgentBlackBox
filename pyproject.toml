@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "agentblackbox"
+name = "abb-recorder"
 version = "0.1.0"
 description = "The flight recorder for autonomous AI agents"
 readme = "README.md"
