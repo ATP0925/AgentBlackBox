@@ -263,6 +263,20 @@ class TestHashChainAndAttribution:
         assert res.valid is True
         assert res.total_events == 1
 
+        loaded = store.query_events(session_id=sample_session.id)
+        assert loaded[0].hash_version == 1
+
+        # Now insert a new event and ensure it gets hash_version = 2
+        new_ev = store.insert_event(Event(
+            session_id=sample_session.id,
+            event_type=EventType.FILE_CREATE,
+            source_path="new.py",
+        ))
+        assert new_ev.hash_version == 2
+        res2 = store.verify_chain(sample_session.id)
+        assert res2.valid is True
+        assert res2.total_events == 2
+
     def test_multiprocess_concurrent_inserts_valid_chain(
         self, tmp_path: Path
     ) -> None:

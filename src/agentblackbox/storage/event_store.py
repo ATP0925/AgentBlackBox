@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS events (
     payload_hash    TEXT,
     prev_hash       TEXT DEFAULT '',
     event_hash      TEXT DEFAULT '',
+    hash_version    INTEGER DEFAULT 1,
     agent_id        TEXT,
     pid             INTEGER,
     parent_event_id INTEGER,
@@ -94,6 +95,7 @@ _EVENT_MIGRATION_COLUMNS: List[Tuple[str, str]] = [
     ("seq", "INTEGER DEFAULT 0"),
     ("prev_hash", "TEXT DEFAULT ''"),
     ("event_hash", "TEXT DEFAULT ''"),
+    ("hash_version", "INTEGER DEFAULT 1"),
     ("agent_id", "TEXT"),
     ("pid", "INTEGER"),
     ("parent_event_id", "INTEGER"),
@@ -111,9 +113,12 @@ class EventStore:
         db_path: Path to SQLite database file. Parent dirs are auto-created.
     """
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, blobs_dir: Optional[Path] = None) -> None:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.blobs_dir = blobs_dir or (self.db_path.parent / "blobs")
+        from agentblackbox.storage.blob_store import BlobStore
+        self.blob_store = BlobStore(self.blobs_dir)
         self._init_db()
 
     def _init_db(self) -> None:
@@ -149,14 +154,17 @@ class EventStore:
         """
         conn = sqlite3.connect(str(self.db_path), timeout=10)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout = 5000")
-        if write:
-            conn.execute("BEGIN IMMEDIATE")
         try:
+            conn.execute("PRAGMA busy_timeout = 5000")
+            if write:
+                conn.execute("BEGIN IMMEDIATE")
             yield conn
             conn.commit()
         except Exception:
-            conn.rollback()
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             raise
         finally:
             conn.close()
@@ -308,14 +316,14 @@ class EventStore:
                     cursor = conn.execute(
                         """INSERT INTO events (session_id, seq, timestamp, event_type,
                            severity, risk_score, source_path, payload, payload_hash,
-                           prev_hash, event_hash, agent_id, pid, parent_event_id,
+                           prev_hash, event_hash, hash_version, agent_id, pid, parent_event_id,
                            blob_hash, tags)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             event.session_id, event.seq, event.timestamp, event.event_type,
                             event.severity, event.risk_score, event.source_path,
                             json.dumps(event.payload), event.payload_hash,
-                            event.prev_hash, event.event_hash,
+                            event.prev_hash, event.event_hash, event.hash_version,
                             event.agent_id, event.pid, event.parent_event_id,
                             event.blob_hash, json.dumps(event.tags),
                         ),
@@ -371,14 +379,14 @@ class EventStore:
                 cursor = conn.execute(
                     """INSERT INTO events (session_id, seq, timestamp, event_type,
                        severity, risk_score, source_path, payload, payload_hash,
-                       prev_hash, event_hash, agent_id, pid, parent_event_id,
+                       prev_hash, event_hash, hash_version, agent_id, pid, parent_event_id,
                        blob_hash, tags)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         event.session_id, event.seq, event.timestamp, event.event_type,
                         event.severity, event.risk_score, event.source_path,
                         json.dumps(event.payload), event.payload_hash,
-                        event.prev_hash, event.event_hash,
+                        event.prev_hash, event.event_hash, event.hash_version,
                         event.agent_id, event.pid, event.parent_event_id,
                         event.blob_hash, json.dumps(event.tags),
                     ),
@@ -409,11 +417,12 @@ class EventStore:
                     (cnt, max_risks[sid], sid),
                 )
 
-    def verify_chain(self, session_id: str) -> ChainVerificationResult:
+    def verify_chain(self, session_id: str, verify_blobs: bool = True) -> ChainVerificationResult:
         """Verify sequence continuity, payload integrity, and hash-chain linkage.
 
         Args:
             session_id: Session ID to verify.
+            verify_blobs: If True, re-hashes on-disk content blobs and fails if missing or tampered.
 
         Returns:
             ChainVerificationResult indicating validity and failure reason if tampered.
@@ -455,16 +464,30 @@ class EventStore:
                     broken_at_seq=event.seq,
                     reason=f"payload_hash mismatch at seq {event.seq}",
                 )
-            expected_event_hash = _compute_event_hash(event)
+            if getattr(event, "hash_version", 2) == 1:
+                expected_event_hash = _compute_event_hash_v1(event)
+            else:
+                expected_event_hash = _compute_event_hash(event)
+
             if event.event_hash != expected_event_hash:
-                if event.event_hash != _compute_event_hash_v1(event):
+                return ChainVerificationResult(
+                    session_id=session_id,
+                    valid=False,
+                    total_events=len(rows),
+                    broken_at_seq=event.seq,
+                    reason=f"event_hash mismatch at seq {event.seq} (hash_version {getattr(event, 'hash_version', 2)})",
+                )
+            if verify_blobs and event.blob_hash:
+                valid_blob, blob_err = self.blob_store.verify_blob(event.blob_hash)
+                if not valid_blob:
                     return ChainVerificationResult(
                         session_id=session_id,
                         valid=False,
                         total_events=len(rows),
                         broken_at_seq=event.seq,
-                        reason=f"event_hash mismatch at seq {event.seq}",
+                        reason=f"Blob integrity failure at seq {event.seq}: {blob_err}",
                     )
+
             expected_prev = event.event_hash
 
         return ChainVerificationResult(
@@ -614,6 +637,7 @@ class EventStore:
             seq=row["seq"] if "seq" in keys and row["seq"] is not None else 0,
             prev_hash=row["prev_hash"] if "prev_hash" in keys and row["prev_hash"] else "",
             event_hash=row["event_hash"] if "event_hash" in keys and row["event_hash"] else "",
+            hash_version=row["hash_version"] if "hash_version" in keys and row["hash_version"] is not None else 1,
             agent_id=row["agent_id"] if "agent_id" in keys else None,
             pid=row["pid"] if "pid" in keys else None,
             parent_event_id=row["parent_event_id"] if "parent_event_id" in keys else None,

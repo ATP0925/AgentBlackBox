@@ -1,5 +1,6 @@
 """Detect secrets (API keys, tokens, passwords) in event payloads and file content."""
 
+import hashlib
 import math
 import re
 from dataclasses import dataclass
@@ -43,21 +44,32 @@ _FALSE_POSITIVE_PATTERNS = [
 ]
 
 
+def _secret_fingerprint(raw: str) -> str:
+    """Deterministic 8-char hex fingerprint (SHA256) of secret without leaking content."""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
+
+
 @dataclass
 class SecretMatch:
     """A detected secret match.
 
     Attributes:
         secret_type: Category of secret (e.g., 'aws_access_key').
-        matched_text: The actual matched text (redacted in logs).
+        matched_text: Safe placeholder ([REDACTED:<type>]); never leaks raw secret.
         confidence: 0.0-1.0 confidence score.
         source: Where it was found ('payload', 'file_content', etc.).
+        length: Character length of the matched secret.
+        offset: Character index offset in the source text.
+        fingerprint: Safe 8-char SHA-256 fingerprint for correlation without content leak.
     """
 
     secret_type: str
     matched_text: str
     confidence: float
     source: str
+    length: int = 0
+    offset: Optional[int] = None
+    fingerprint: str = ""
 
 
 def _shannon_entropy(text: str) -> float:
@@ -114,15 +126,18 @@ def detect_secrets(text: str, source: str = "unknown") -> List[SecretMatch]:
 
     for pattern, secret_type in _SECRET_PATTERNS:
         for match in pattern.finditer(text):
-            matched_text = match.group(0)
-            if _is_false_positive(matched_text):
+            raw = match.group(0)
+            if _is_false_positive(raw):
                 continue
             confidence = 0.9  # Pattern match = high confidence
             matches.append(SecretMatch(
                 secret_type=secret_type,
-                matched_text=matched_text[:8] + "..." + matched_text[-4:] if len(matched_text) > 16 else matched_text,
+                matched_text=f"[REDACTED:{secret_type}]",
                 confidence=confidence,
                 source=source,
+                length=len(raw),
+                offset=match.start(),
+                fingerprint=_secret_fingerprint(raw),
             ))
 
     # Entropy-based detection for unmatched high-entropy strings
@@ -137,14 +152,18 @@ def detect_secrets(text: str, source: str = "unknown") -> List[SecretMatch]:
             continue
         entropy = _shannon_entropy(value)
         if entropy > 4.0:
+            fp = _secret_fingerprint(value)
             # Check it wasn't already caught by pattern matching
-            already_found = any(value[:8] in m.matched_text for m in matches)
+            already_found = any(m.fingerprint == fp for m in matches)
             if not already_found:
                 matches.append(SecretMatch(
                     secret_type="high_entropy_secret",
-                    matched_text=value[:8] + "...",
+                    matched_text="[REDACTED:high_entropy_secret]",
                     confidence=min(0.5 + (entropy - 4.0) * 0.2, 0.95),
                     source=source,
+                    length=len(value),
+                    offset=match.start(1),
+                    fingerprint=fp,
                 ))
 
     return matches

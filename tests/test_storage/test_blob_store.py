@@ -90,3 +90,48 @@ class TestWatcherBlobIntegration:
         snaps = store.get_file_snapshots(ev.source_path or "", session_id=session.id)
         assert len(snaps) >= 1
         assert snaps[0].blob_hash == ev.blob_hash
+
+    def test_verify_chain_fails_if_blob_missing(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "bb.db"
+        blobs_dir = tmp_path / "blobs"
+        store = EventStore(db_path, blobs_dir=blobs_dir)
+        session = Session(workspace_path=str(tmp_path))
+        store.create_session(session)
+
+        fake_hash = "a" * 64
+        store.insert_event(Event(
+            session_id=session.id,
+            event_type=EventType.FILE_CREATE,
+            source_path="foo.py",
+            blob_hash=fake_hash,
+        ))
+
+        res = store.verify_chain(session.id)
+        assert res.valid is False
+        assert "Blob file missing on disk" in (res.reason or "")
+
+    def test_verify_chain_fails_if_blob_content_tampered(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "bb2.db"
+        blobs_dir = tmp_path / "blobs2"
+        store = EventStore(db_path, blobs_dir=blobs_dir)
+        session = Session(workspace_path=str(tmp_path))
+        store.create_session(session)
+
+        blob_hash, _, _ = store.blob_store.put_bytes(b"original content")
+        store.insert_event(Event(
+            session_id=session.id,
+            event_type=EventType.FILE_CREATE,
+            source_path="foo.py",
+            blob_hash=blob_hash,
+        ))
+
+        assert store.verify_chain(session.id).valid is True
+
+        # Malicious actor tampers with the blob file directly on disk
+        blob_file = blobs_dir / blob_hash
+        blob_file.write_bytes(b"tampered content")
+
+        res = store.verify_chain(session.id)
+        assert res.valid is False
+        assert "Blob content mismatch" in (res.reason or "")
+

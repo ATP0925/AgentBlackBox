@@ -93,3 +93,23 @@ class BlobStore:
         except UnicodeDecodeError:
             return None
 
+    def verify_blob(self, blob_hash: str) -> Tuple[bool, Optional[str]]:
+        """Verify that the blob file exists on disk and its SHA-256 matches the blob_hash.
+
+        Args:
+            blob_hash: 64-character lowercase hex SHA-256 digest.
+
+        Returns:
+            Tuple of (is_valid, error_reason).
+        """
+        if not _SHA256_RE.match(blob_hash):
+            return False, f"Invalid blob_hash format: {blob_hash}"
+        raw = self.get_bytes(blob_hash)
+        if raw is None:
+            return False, f"Blob file missing on disk: {blob_hash}"
+        actual = hashlib.sha256(raw).hexdigest()
+        if actual != blob_hash:
+            return False, f"Blob content mismatch: expected {blob_hash}, got {actual}"
+        return True, None
+
+

@@ -79,7 +79,7 @@ def _compute_event_hash(event: "Event") -> str:
         "pid": event.pid,
         "parent_event_id": event.parent_event_id,
         "blob_hash": event.blob_hash,
-        "severity": str(event.severity),
+        "severity": event.severity.value if hasattr(event.severity, "value") else str(event.severity),
         "risk_score": round(float(event.risk_score), 4),
         "tags": sorted(event.tags) if event.tags else [],
     }
@@ -163,6 +163,7 @@ class Event:
     seq: int = 0
     prev_hash: str = ""
     event_hash: str = ""
+    hash_version: int = 2
     agent_id: Optional[str] = None
     pid: Optional[int] = None
     parent_event_id: Optional[int] = None

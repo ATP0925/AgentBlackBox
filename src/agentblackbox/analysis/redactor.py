@@ -7,11 +7,12 @@ from agentblackbox.analysis.secret_detector import (
     SecretMatch,
     _SECRET_PATTERNS,
     _is_false_positive,
+    _secret_fingerprint,
     _shannon_entropy,
 )
 
 _SENSITIVE_KEY_PATTERN = re.compile(
-    r"^(?:.*_)?(?:password|passwd|secret|token|api_?key|auth.*|cred.*|private_?key)(?:_.*)?$",
+    r"^(?:(?:api[_-]?|access[_-]?|auth[_-]?|bearer[_-]?|client[_-]?|refresh[_-]?|secret[_-]?|private[_-]?)?(?:password|passwd|passphrase|secret|api[_-]?key|private[_-]?key|authorization|credentials?)|(?:api[_-]?|access[_-]?|auth[_-]?|bearer[_-]?|refresh[_-]?|session[_-]?)?token)$",
     re.IGNORECASE,
 )
 
@@ -19,13 +20,6 @@ _ASSIGN_PATTERN = re.compile(
     r'((?:key|secret|token|password|credential|auth|bearer)\s*[:=]\s*(?:["\']?))([^\s"\'`]{8,})((?:["\']?))',
     re.IGNORECASE,
 )
-
-
-def _mask_secret(raw: str) -> str:
-    """Safely mask secret for logging/matching records without leaking raw text."""
-    if len(raw) <= 8:
-        return "***[REDACTED]***"
-    return f"{raw[:3]}...[REDACTED]...{raw[-2:]}"
 
 
 def _is_high_entropy_secret(value: str) -> Tuple[bool, float]:
@@ -65,9 +59,12 @@ def redact_text(text: str, source: str = "payload") -> Tuple[str, List[SecretMat
                 return raw
             matches.append(SecretMatch(
                 secret_type=stype,
-                matched_text=_mask_secret(raw),
+                matched_text=f"[REDACTED:{stype}]",
                 confidence=0.9,
                 source=source,
+                length=len(raw),
+                offset=m.start(),
+                fingerprint=_secret_fingerprint(raw),
             ))
             return f"[REDACTED:{stype}]"
 
@@ -81,9 +78,12 @@ def redact_text(text: str, source: str = "payload") -> Tuple[str, List[SecretMat
         if is_secret:
             matches.append(SecretMatch(
                 secret_type="high_entropy_secret",
-                matched_text=_mask_secret(value),
+                matched_text="[REDACTED:high_entropy_secret]",
                 confidence=min(0.5 + (entropy - 2.8) * 0.2, 0.95),
                 source=source,
+                length=len(value),
+                offset=m.start(2),
+                fingerprint=_secret_fingerprint(value),
             ))
             return f"{prefix}[REDACTED:high_entropy_secret]{suffix}"
         return m.group(0)
@@ -119,9 +119,11 @@ def redact_payload(obj: Any, source: str = "payload") -> Tuple[Any, List[SecretM
                     clean_dict[k] = f"[REDACTED:{k.lower()}]"
                     all_matches.append(SecretMatch(
                         secret_type=f"sensitive_key_{k.lower()}",
-                        matched_text=_mask_secret(v),
+                        matched_text=f"[REDACTED:{k.lower()}]",
                         confidence=1.0,
                         source=source,
+                        length=len(v),
+                        fingerprint=_secret_fingerprint(v),
                     ))
                     continue
             clean_v, m = redact_payload(v, source=source)

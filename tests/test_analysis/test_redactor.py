@@ -57,16 +57,45 @@ class TestRedactPayloadAndBytes:
         assert matches == []
 
     def test_redacts_sensitive_dict_keys_regardless_of_entropy(self) -> None:
+        # Task C: author, max_tokens, token_count, credit must NOT be redacted
+        # password, api_key, access_token, authorization MUST be redacted
         payload = {
+            "author": "Pratik Atpadkar",
+            "max_tokens": 4096,
+            "token_count": 512,
+            "credit": 100,
             "password": "simplepassword",
             "api_key": "custom_format_token_123",
-            "safe_key": "safe_value",
+            "access_token": "token_val_456",
+            "authorization": "Bearer xyz_789",
         }
         clean, matches = redact_payload(payload)
+        assert clean["author"] == "Pratik Atpadkar"
+        assert clean["max_tokens"] == 4096
+        assert clean["token_count"] == 512
+        assert clean["credit"] == 100
         assert clean["password"] == "[REDACTED:password]"
         assert clean["api_key"] == "[REDACTED:api_key]"
-        assert clean["safe_key"] == "safe_value"
-        assert len(matches) == 2
+        assert clean["access_token"] == "[REDACTED:access_token]"
+        assert clean["authorization"] == "[REDACTED:authorization]"
+        assert len(matches) == 4
+
+    def test_no_substring_of_secret_in_any_secretmatch_field(self) -> None:
+        # Task D: No substring of secret appears in any SecretMatch field
+        secret = "9876543210zywvutsrqponmlkjihgfedcba"
+        raw = f'my_token = "{secret}"'
+        redacted, matches = redact_text(raw)
+        assert len(matches) >= 1
+        for m in matches:
+            assert m.length == len(secret)
+            assert len(m.fingerprint) == 8
+            # Check 4-char and full substrings
+            for start in range(len(secret) - 4):
+                sub = secret[start:start+4]
+                assert sub not in m.matched_text
+                assert sub not in m.secret_type
+                assert sub not in m.fingerprint
+                assert sub not in m.source
 
     def test_redacts_hex_tokens_with_lower_entropy_threshold(self) -> None:
         # 32-char hex token has entropy ~3.5 (< 4.0), which failed old > 4.0 check
@@ -82,7 +111,7 @@ class TestRedactPayloadAndBytes:
         _, matches = redact_text(raw)
         for m in matches:
             assert m.matched_text != short_secret
-            assert "[REDACTED]" in m.matched_text
+            assert "[REDACTED" in m.matched_text
 
     def test_redact_bytes_handles_windows_utf16_powershell(self) -> None:
         utf16_text = 'API_TOKEN="AKIAIOSFODNN7EXAMPLE"'.encode("utf-16")

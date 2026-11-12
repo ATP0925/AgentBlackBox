@@ -1,5 +1,6 @@
 """Tests for EventStore — SQLite persistence layer."""
 
+import sqlite3
 import pytest
 from agentblackbox.storage.event_store import EventStore
 from agentblackbox.storage.models import (
@@ -54,12 +55,38 @@ class TestEventCRUD:
         assert events[0].event_type == EventType.FILE_CREATE
 
     def test_insert_updates_session_counter(self, store: EventStore, sample_session: Session, sample_event: Event) -> None:
-        """Inserting an event increments session's total_events."""
+        """Inserting an event increments session's total_events and updates risk_score."""
         store.create_session(sample_session)
+        sample_event.risk_score = 7.5
         store.insert_event(sample_event)
         session = store.get_session(sample_session.id)
         assert session is not None
         assert session.total_events == 1
+        assert session.risk_score == 7.5
+
+    def test_lock_timeout_releases_connection(self, store: EventStore, sample_session: Session) -> None:
+        """When BEGIN IMMEDIATE times out, connection must be cleanly closed without file leaks."""
+        store.create_session(sample_session)
+        holder = sqlite3.connect(str(store.db_path))
+        holder.execute("BEGIN EXCLUSIVE")
+
+        try:
+            with sqlite3.connect(str(store.db_path), timeout=0.05) as quick_conn:
+                quick_conn.execute("BEGIN IMMEDIATE")
+                assert False, "Should have timed out"
+        except sqlite3.OperationalError:
+            pass  # Expected locked error
+        finally:
+            holder.rollback()
+            holder.close()
+
+        # Database must be completely usable without lingering locks
+        ev = store.insert_event(Event(
+            session_id=sample_session.id,
+            event_type=EventType.FILE_CREATE,
+            source_path="after_unlock.py",
+        ))
+        assert ev.id is not None
 
     def test_query_by_event_type(self, store: EventStore, sample_session: Session) -> None:
         """Events can be filtered by type."""
