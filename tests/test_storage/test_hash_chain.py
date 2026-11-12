@@ -198,4 +198,70 @@ class TestHashChainAndAttribution:
         assert res.valid is True
         assert res.total_events == 40
 
+    def test_detects_tags_and_source_path_tampering(
+        self, store: EventStore, sample_session: Session
+    ) -> None:
+        """Modifying tags or source_path in SQLite must invalidate the chain."""
+        store.create_session(sample_session)
+        e1 = store.insert_event(Event(
+            session_id=sample_session.id,
+            event_type=EventType.FILE_CREATE,
+            source_path="auth.py",
+            tags=["sensitive_file", "secret_redacted"],
+        ))
+        assert store.verify_chain(sample_session.id).valid is True
+
+        # Malicious agent tries to remove the secret_redacted tag from SQLite
+        with sqlite3.connect(str(store.db_path)) as conn:
+            conn.execute("UPDATE events SET tags = '[\"harmless\"]' WHERE id = ?", (e1.id,))
+            conn.commit()
+
+        res = store.verify_chain(sample_session.id)
+        assert res.valid is False
+        assert res.broken_at_seq == 1
+        assert "event_hash mismatch" in (res.reason or "")
+
+    def test_legacy_v1_events_still_verify(
+        self, store: EventStore, sample_session: Session
+    ) -> None:
+        """Legacy sessions with v1 hashes must still pass chain verification."""
+        import json
+        from agentblackbox.storage.models import _compute_event_hash_v1, _hash_payload
+        store.create_session(sample_session)
+        payload = {"cmd": "ls"}
+        e1 = Event(
+            session_id=sample_session.id,
+            seq=1,
+            timestamp="2026-11-12T10:00:00Z",
+            event_type=EventType.CMD_EXECUTE,
+            payload=payload,
+            payload_hash=_hash_payload(payload),
+            prev_hash="GENESIS",
+            agent_id="claude-code",
+            pid=1234,
+        )
+        e1.event_hash = _compute_event_hash_v1(e1)
+        with sqlite3.connect(str(store.db_path)) as conn:
+            conn.execute(
+                """INSERT INTO events (session_id, seq, timestamp, event_type,
+                   severity, risk_score, source_path, payload, payload_hash,
+                   prev_hash, event_hash, agent_id, pid, parent_event_id,
+                   blob_hash, tags)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    e1.session_id, e1.seq, e1.timestamp, e1.event_type,
+                    e1.severity, e1.risk_score, e1.source_path,
+                    json.dumps(e1.payload), e1.payload_hash,
+                    e1.prev_hash, e1.event_hash,
+                    e1.agent_id, e1.pid, e1.parent_event_id,
+                    e1.blob_hash, json.dumps(e1.tags),
+                ),
+            )
+            conn.commit()
+
+        res = store.verify_chain(sample_session.id)
+        assert res.valid is True
+        assert res.total_events == 1
+
+
 

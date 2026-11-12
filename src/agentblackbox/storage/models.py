@@ -31,6 +31,27 @@ def _hash_payload(payload: dict) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+def _compute_event_hash_v1(event: "Event") -> str:
+    """Compute legacy v1 SHA256 hash without version field or tags for backward compatibility."""
+    canonical = {
+        "session_id": event.session_id,
+        "seq": event.seq,
+        "timestamp": event.timestamp,
+        "event_type": event.event_type,
+        "severity": event.severity,
+        "risk_score": round(float(event.risk_score), 4),
+        "source_path": event.source_path,
+        "payload_hash": event.payload_hash,
+        "prev_hash": event.prev_hash,
+        "agent_id": event.agent_id,
+        "pid": event.pid,
+        "parent_event_id": event.parent_event_id,
+        "blob_hash": event.blob_hash,
+    }
+    raw = json.dumps(canonical, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
 def _compute_event_hash(event: "Event") -> str:
     """Compute SHA256 hash chaining this event to its predecessor.
 

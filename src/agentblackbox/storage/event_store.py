@@ -17,6 +17,7 @@ from agentblackbox.storage.models import (
     Session,
     Severity,
     _compute_event_hash,
+    _compute_event_hash_v1,
     _hash_payload,
 )
 
@@ -439,13 +440,14 @@ class EventStore:
                 )
             expected_event_hash = _compute_event_hash(event)
             if event.event_hash != expected_event_hash:
-                return ChainVerificationResult(
-                    session_id=session_id,
-                    valid=False,
-                    total_events=len(rows),
-                    broken_at_seq=event.seq,
-                    reason=f"event_hash mismatch at seq {event.seq}",
-                )
+                if event.event_hash != _compute_event_hash_v1(event):
+                    return ChainVerificationResult(
+                        session_id=session_id,
+                        valid=False,
+                        total_events=len(rows),
+                        broken_at_seq=event.seq,
+                        reason=f"event_hash mismatch at seq {event.seq}",
+                    )
             expected_prev = event.event_hash
 
         return ChainVerificationResult(
