@@ -244,7 +244,7 @@ class FileSystemWatcher(BaseWatcher):
             blob_store=blob_store,
             agent_id=agent_id,
         )
-        polling = (sys.platform == "win32") if use_polling is None else use_polling
+        polling = (sys.platform in ("win32", "darwin")) if use_polling is None else use_polling
         self._observer = PollingObserver(timeout=poll_interval) if polling else Observer()
 
     def start(self) -> None:

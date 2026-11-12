@@ -25,9 +25,20 @@ from agentblackbox.storage.models import Session
 from agentblackbox.watchers.agent_hooks import install_claude_hook
 from agentblackbox.watchers.terminal import run_recorded_command
 
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 app = typer.Typer(
     name="abb",
-    help="AgentBlackBox — The flight recorder for AI agents. 🔴",
+    help="AgentBlackBox -- The flight recorder for AI agents.",
     no_args_is_help=True,
 )
 console = Console()
