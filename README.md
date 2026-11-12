@@ -1,5 +1,7 @@
 # 🔴 AgentBlackBox (`abb-recorder`)
 
+[![CI](https://github.com/ATP0925/AgentBlackBox/actions/workflows/ci.yml/badge.svg)](https://github.com/ATP0925/AgentBlackBox/actions/workflows/ci.yml)
+
 **The flight recorder for autonomous AI coding agents.**
 
 > Every autonomous system needs a black box.
