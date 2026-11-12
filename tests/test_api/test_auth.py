@@ -75,3 +75,9 @@ class TestApiAuthAndVerify:
             ws.send_text("ping")
             assert ws.receive_json() == {"type": "pong"}
 
+    def test_dns_rebinding_rejected_by_trusted_host(self, authed_store) -> None:
+        client = TestClient(app)
+        resp = client.get("/api/v1/sessions", headers={"Host": "evil.attacker.com"})
+        assert resp.status_code == 400
+
+

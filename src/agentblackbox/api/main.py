@@ -2,6 +2,7 @@
 
 from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import HTMLResponse
 
 from agentblackbox import __version__
@@ -11,6 +12,11 @@ app = FastAPI(
     title="AgentBlackBox API",
     description="The flight recorder for autonomous AI agents.",
     version=__version__,
+)
+
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["127.0.0.1", "localhost", "testserver"],
 )
 
 app.add_middleware(
