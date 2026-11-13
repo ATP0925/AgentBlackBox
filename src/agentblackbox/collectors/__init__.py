@@ -7,3 +7,4 @@ from agentblackbox.collectors.ide_hooks import (
 )
 
 __all__ = ["NormalizedAgentEvent", "UniversalIDECollector"]
+

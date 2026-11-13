@@ -103,3 +103,4 @@ def test_universal_ide_collector_normalizes_cursor_cline_and_antigravity(tmp_pat
     )
     assert ag_ev.agent_source == "antigravity"
     assert ag_ev.target_resource == "src/main.py"
+

@@ -1,6 +1,7 @@
 """Terminal command recorder with secret redaction and child attribution."""
 
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -43,6 +44,41 @@ class CommandRunResult:
     execute_event_id: Optional[int]
     output_event_id: Optional[int]
     pid: int
+
+
+def run_monitored_command(
+    cmd: list[str],
+    env: dict[str, str],
+    timeout_sec: float | None = None,
+) -> tuple[int, str, str, float]:
+    """Execute command in its own process group and kill entire tree on interrupt."""
+    t0 = time.monotonic()
+    kwargs: dict = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "env": env,
+    }
+    if sys.platform != "win32":
+        kwargs["start_new_session"] = True
+    proc = subprocess.Popen(cmd, **kwargs)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_sec)
+        returncode = proc.returncode
+    except (subprocess.TimeoutExpired, KeyboardInterrupt):
+        if sys.platform != "win32":
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except OSError:
+                proc.terminate()
+        else:
+            proc.terminate()
+        stdout, stderr = proc.communicate(timeout=5.0)
+        returncode = -1
+    duration_ms = round((time.monotonic() - t0) * 1000.0, 2)
+    return returncode, stdout or "", stderr or "", duration_ms
 
 
 def run_recorded_command(

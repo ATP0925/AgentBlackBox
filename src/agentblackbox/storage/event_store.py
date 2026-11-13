@@ -3,9 +3,10 @@
 import json
 import os
 import sqlite3
+import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Generator, List, Optional, Tuple
+from typing import Dict, Generator, Iterator, List, Optional, Tuple, Union
 
 import structlog
 
@@ -128,21 +129,29 @@ class EventStore:
 
     def __init__(
         self,
-        db_path: Path,
+        db_path: Union[Path, str],
         blobs_dir: Optional[Path] = None,
         checkpoint_interval: int = 50,
     ) -> None:
-        self.db_path = db_path
+        self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.blobs_dir = blobs_dir or (self.db_path.parent / "blobs")
         self.checkpoint_interval = checkpoint_interval
+        self._local = threading.local()
+        self._write_lock = threading.RLock()
+        self._closed = False
         from agentblackbox.storage.blob_store import BlobStore
         self.blob_store = BlobStore(self.blobs_dir)
+        self._init_schema()
+
+    def _init_schema(self) -> None:
+        """Initialize database schema, additive columns, and WAL mode."""
         self._init_db()
 
     def _init_db(self) -> None:
         """Initialize database schema, additive columns, and WAL mode."""
-        with self._connect() as conn:
+        with self._write_lock:
+            conn = self._get_thread_conn()
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA foreign_keys=ON")
             conn.executescript(_SCHEMA)
@@ -179,34 +188,71 @@ class EventStore:
         except sqlite3.OperationalError:
             pass
 
+    def _get_thread_conn(self) -> sqlite3.Connection:
+        """Return persistent thread-local SQLite connection configured with WAL and busy timeout."""
+        conn: Optional[sqlite3.Connection] = getattr(self._local, "conn", None)
+        if conn is None or self._closed:
+            conn = sqlite3.connect(
+                str(self.db_path),
+                timeout=15.0,
+                isolation_level=None,  # Explicit transaction management
+                check_same_thread=True,
+            )
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
+            conn.execute("PRAGMA foreign_keys=ON;")
+            conn.execute("PRAGMA busy_timeout=10000;")
+            self._local.conn = conn
+            self._closed = False
+        return conn
+
     @contextmanager
-    def _connect(self, write: bool = False) -> Generator[sqlite3.Connection, None, None]:
-        """Context manager for database connections.
-
-        Args:
-            write: If True, executes ``BEGIN IMMEDIATE`` to acquire an exclusive
-                write lock up front, eliminating concurrency races between parallel
-                watchers/processes.
-
-        Yields:
-            SQLite connection with row factory.
-        """
-        conn = sqlite3.connect(str(self.db_path), timeout=10)
-        conn.row_factory = sqlite3.Row
-        try:
-            conn.execute("PRAGMA busy_timeout = 5000")
-            if write:
-                conn.execute("BEGIN IMMEDIATE")
+    def _connection(self, write: bool = False) -> Iterator[sqlite3.Connection]:
+        """Provide a reusable thread-local connection; serialize writes via RLock."""
+        if write:
+            with self._write_lock:
+                conn = self._get_thread_conn()
+                need_tx = not conn.in_transaction
+                if need_tx:
+                    conn.execute("BEGIN IMMEDIATE")
+                try:
+                    yield conn
+                    if conn.in_transaction:
+                        conn.execute("COMMIT")
+                except Exception:
+                    if conn.in_transaction:
+                        try:
+                            conn.execute("ROLLBACK")
+                        except Exception:
+                            pass
+                    raise
+        else:
+            conn = self._get_thread_conn()
             yield conn
-            conn.commit()
-        except Exception:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            raise
-        finally:
-            conn.close()
+
+    def _connect(self, write: bool = False) -> Iterator[sqlite3.Connection]:
+        """Context manager alias for _connection for backward compatibility."""
+        return self._connection(write=write)
+
+    def close(self) -> None:
+        """Close the current thread's SQLite connection cleanly."""
+        with self._write_lock:
+            self._closed = True
+            conn: Optional[sqlite3.Connection] = getattr(self._local, "conn", None)
+            if conn is not None:
+                try:
+                    conn.close()
+                finally:
+                    self._local.conn = None
+
+    def record_event(self, event: Event) -> Event:
+        """Alias for insert_event with serialized HMAC chain append."""
+        return self.insert_event(event)
+
+    def append_event(self, event: Event) -> Event:
+        """Alias for insert_event with serialized HMAC chain append."""
+        return self.insert_event(event)
 
     # ---------- Session Operations ----------
 

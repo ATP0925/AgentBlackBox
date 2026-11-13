@@ -110,3 +110,4 @@ class TamperGuard:
                 pass
         except Exception as exc:
             logger.warning("Remote checkpoint webhook replication failed: %s", exc)
+

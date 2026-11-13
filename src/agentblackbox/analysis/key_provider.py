@@ -106,3 +106,4 @@ class KeyProvider:
         # Overwrite in-memory bytearray key buffer on daemon shutdown.
         for i in range(len(self._master_key)):
             self._master_key[i] = 0
+

@@ -6,7 +6,7 @@ import secrets
 import shlex
 import subprocess
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -20,6 +20,7 @@ from agentblackbox.collectors.ide_hooks import UniversalIDECollector
 from agentblackbox.daemon.config import BlackBoxConfig
 from agentblackbox.daemon.core import (
     get_daemon_state,
+    is_pid_alive,
     start_background_daemon,
     stop_background_daemon,
 )
@@ -47,11 +48,62 @@ app = typer.Typer(
 console = Console()
 
 
+@dataclass(frozen=True)
+class CLIContext:
+    workspace: Path
+    abb_dir: Path
+    db_path: Path
+    pid_path: Path
+    state_path: Path
+    log_path: Path
+
+    @classmethod
+    def resolve(cls, workspace: Path | None = None) -> "CLIContext":
+        root = (workspace or Path.cwd()).resolve()
+        abb_dir = root / ".agentblackbox"
+        abb_dir.mkdir(parents=True, exist_ok=True)
+        if (abb_dir / "events.db").exists():
+            db_path = abb_dir / "events.db"
+        elif (abb_dir / "blackbox.db").exists():
+            db_path = abb_dir / "blackbox.db"
+        else:
+            db_path = abb_dir / "blackbox.db"
+        return cls(
+            workspace=root,
+            abb_dir=abb_dir,
+            db_path=db_path,
+            pid_path=abb_dir / "daemon.pid",
+            state_path=abb_dir / "daemon.json",
+            log_path=abb_dir / "daemon.log",
+        )
+
+    def open_store(self) -> EventStore:
+        return EventStore(self.db_path)
+
+    def active_daemon_pid(self) -> int | None:
+        if not self.pid_path.exists():
+            return None
+        try:
+            pid = int(self.pid_path.read_text(encoding="utf-8").strip())
+        except ValueError:
+            return None
+        if is_pid_alive(pid):
+            return pid
+        # Clean up stale PID file automatically
+        self.pid_path.unlink(missing_ok=True)
+        return None
+
+
+def cli_abort(message: str, code: int = 1) -> None:
+    # Print formatted error and exit with a non-zero status code for CI/scripts.
+    console.print(f"[bold red]Error:[/bold red] {message}")
+    raise typer.Exit(code=code)
+
+
 def _get_store(workspace: Optional[Path] = None) -> EventStore:
     """Get or create an EventStore for the workspace."""
-    ws = workspace or Path.cwd()
-    config = BlackBoxConfig(workspace_path=ws)
-    return EventStore(config.db_path)
+    ctx = CLIContext.resolve(workspace)
+    return ctx.open_store()
 
 
 @app.command()
@@ -81,8 +133,7 @@ def start(
     try:
         state = start_background_daemon(config, name=name, agent_hint=agent)
     except RuntimeError as exc:
-        console.print(f"[red]Error: {exc}[/]")
-        raise typer.Exit(1)
+        cli_abort(str(exc))
 
     console.print("[bold green]🔴 Live recording started[/]")
     console.print(f"  Session:   [cyan]{state.session_id}[/]")
@@ -122,8 +173,7 @@ def stop(
             store.stop_session(sessions[0].id)
             console.print(f"[bold yellow]⏹️ Session {sessions[0].id} stopped.[/]")
         else:
-            console.print("[red]No active recording session found.[/]")
-            raise typer.Exit(1)
+            cli_abort("No active recording session found.")
 
 
 @app.command()
@@ -197,7 +247,7 @@ def run(
     if result.stderr:
         console.print(f"[red]{result.stderr}[/]", end="")
     if result.exit_code != 0:
-        raise typer.Exit(1)
+        cli_abort(f"Command exited with code {result.exit_code}", code=result.exit_code)
 
 
 @app.command("hook-install")
@@ -208,8 +258,7 @@ def hook_install(
     """Install agent attribution hooks (e.g., Claude Code PreToolUse hook)."""
     ws = workspace or Path.cwd()
     if agent.lower() != "claude-code":
-        console.print(f"[red]Unsupported agent '{agent}'. Currently supported: claude-code[/]")
-        raise typer.Exit(1)
+        cli_abort(f"Unsupported agent '{agent}'. Currently supported: claude-code")
     path = install_claude_hook(ws)
     console.print(f"[bold green]✅ Installed Claude Code hook[/] at [cyan]{path}[/]")
 
@@ -529,3 +578,7 @@ def serve(
 
     console.print(f"[bold green]🚀 Starting AgentBlackBox API[/] on http://127.0.0.1:{port}")
     uvicorn.run("agentblackbox.api.main:app", host="127.0.0.1", port=port)
+
+
+if __name__ == "__main__":
+    app()

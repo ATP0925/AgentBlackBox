@@ -1,5 +1,6 @@
 """Detect secrets (API keys, tokens, passwords) in event payloads and file content."""
 
+from collections import Counter
 import hashlib
 import hmac
 import math
@@ -10,6 +11,12 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
+
+# Match plausible high-entropy secret tokens (20 to 256 non-whitespace token chars)
+# while ignoring plain filesystem paths (/usr/local/...) and URLs without query keys
+_CANDIDATE_TOKEN_RE = re.compile(
+    r"(?<![/\w.-])([A-Za-z0-9_\-+=/]{20,256})(?![/\w.-])"
+)
 
 # Pre-compiled patterns for known secret formats
 _SECRET_PATTERNS = [
@@ -143,28 +150,36 @@ class SecretMatch:
 
 
 def _shannon_entropy(text: str) -> float:
-    """Calculate Shannon entropy of a string.
-
-    High entropy (>4.5) suggests random/encrypted data like API keys.
-
-    Args:
-        text: String to analyze.
-
-    Returns:
-        Entropy value (bits per character).
-    """
-    if not text:
-        return 0.0
-    freq = {}
-    for c in text:
-        freq[c] = freq.get(c, 0) + 1
+    """Compute Shannon entropy (bits per character) using C-optimized Counter."""
     length = len(text)
-    entropy = 0.0
-    for count in freq.values():
-        p = count / length
-        if p > 0:
-            entropy -= p * math.log2(p)
-    return entropy
+    if length == 0:
+        return 0.0
+    counts = Counter(text)
+    inv_len = 1.0 / length
+    return -sum((count * inv_len) * math.log2(count * inv_len) for count in counts.values())
+
+
+def find_high_entropy_tokens(
+    payload: str,
+    entropy_threshold: float = 4.35,
+    max_scan_bytes: int = 262_144,
+) -> list[tuple[str, float]]:
+    """Extract only candidate secret tokens and compute entropy in O(k) time."""
+    if not payload:
+        return []
+    sample = payload[:max_scan_bytes]
+    findings: list[tuple[str, float]] = []
+    for match in _CANDIDATE_TOKEN_RE.finditer(sample):
+        token = match.group(1)
+        # Skip pure hex git commit SHAs (40 chars lowercase hex) or pure letters
+        if len(token) == 40 and all(c in "0123456789abcdef" for c in token):
+            continue
+        if token.isalpha() or token.isdigit():
+            continue
+        ent = _shannon_entropy(token)
+        if ent >= entropy_threshold:
+            findings.append((token, round(ent, 3)))
+    return findings
 
 
 def _is_false_positive(text: str) -> bool:

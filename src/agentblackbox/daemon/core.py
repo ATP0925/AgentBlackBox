@@ -7,11 +7,12 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from threading import Event as ThreadEvent, Lock
-from typing import Optional
+from typing import Any, Optional
 
 import structlog
 
@@ -53,19 +54,26 @@ class DaemonState:
         agent_hint: Optional agent identifier.
         started_at: ISO 8601 startup timestamp.
         installed_git_hook: Whether this daemon installed the git hook.
+        cmd: Optional startup command arguments.
     """
 
     session_id: str
     pid: int
-    workspace_path: str
+    workspace_path: str = ""
     agent_hint: Optional[str] = None
     started_at: str = ""
     installed_git_hook: bool = False
+    cmd: Optional[list] = None
 
 
 def _state_file(config: BlackBoxConfig) -> Path:
     """Return path to daemon state JSON file."""
     return config.workspace_path / ".agentblackbox" / "daemon.json"
+
+
+def _pid_file(config: BlackBoxConfig) -> Path:
+    """Return path to daemon PID file."""
+    return config.workspace_path / ".agentblackbox" / "daemon.pid"
 
 
 def _stop_file(config: BlackBoxConfig) -> Path:
@@ -78,15 +86,8 @@ def _log_file(config: BlackBoxConfig) -> Path:
     return config.workspace_path / ".agentblackbox" / "daemon.log"
 
 
-def is_pid_alive(pid: int) -> bool:
-    """Check whether a process ID is currently alive on Windows or POSIX.
-
-    Args:
-        pid: Process identifier.
-
-    Returns:
-        True if process is running, False otherwise.
-    """
+def is_pid_alive(pid: int, expected_start_token: str | None = None) -> bool:
+    """Check if PID is alive and verify it belongs to an agentblackbox process."""
     if pid <= 0:
         return False
 
@@ -105,13 +106,96 @@ def is_pid_alive(pid: int) -> bool:
 
     try:
         os.kill(pid, 0)
-        return True
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
     except OSError:
         return False
+
+    # Linux /proc cmdline guard against stale PID reuse
+    proc_cmdline = Path(f"/proc/{pid}/cmdline")
+    if proc_cmdline.exists():
+        try:
+            raw = proc_cmdline.read_bytes().decode("utf-8", errors="ignore")
+            if "agentblackbox" not in raw and "abb" not in raw:
+                return False
+        except OSError:
+            pass
+
+    return True
+
+
+def spawn_detached_daemon(
+    cmd: list[str],
+    log_path: Path,
+    state_path: Path,
+    pid_path: Path,
+    session_id: str,
+    env: dict[str, str] | None = None,
+) -> int:
+    """Spawn background daemon safely without premature context-manager FD issues."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_fd = os.open(
+        str(log_path),
+        os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+        0o600,
+    )
+    try:
+        popen_kwargs: dict[str, Any] = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": log_fd,
+            "stderr": log_fd,
+            "close_fds": True,
+            "env": env or os.environ.copy(),
+        }
+        if sys.platform == "win32":
+            popen_kwargs["creationflags"] = (
+                subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+            )
+        else:
+            popen_kwargs["start_new_session"] = True
+        proc = subprocess.Popen(cmd, **popen_kwargs)
+    finally:
+        # Parent closes its copy of the FD; child retains its inherited descriptor
+        os.close(log_fd)
+
+    pid_path.write_text(str(proc.pid), encoding="utf-8")
+    state_payload = {
+        "pid": proc.pid,
+        "session_id": session_id,
+        "started_at": time.time(),
+        "cmd": cmd,
+    }
+    state_path.write_text(json.dumps(state_payload, indent=2), encoding="utf-8")
+    return proc.pid
+
+
+class GracefulDaemonController:
+    """Coordinates atomic event processing and clean SIGTERM/SIGINT shutdown."""
+
+    def __init__(self) -> None:
+        self._stop_event = threading.Event()
+        self._event_lock = threading.RLock()
+
+    @property
+    def should_stop(self) -> bool:
+        return self._stop_event.is_set()
+
+    def request_stop(self, signum: int | None = None, frame: Any = None) -> None:
+        self._stop_event.set()
+
+    def install_signal_handlers(self) -> None:
+        signal.signal(signal.SIGINT, self.request_stop)
+        if hasattr(signal, "SIGTERM"):
+            signal.signal(signal.SIGTERM, self.request_stop)
+
+    def execute_atomic_event(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        """Acquire lock so SIGTERM loop waits for in-flight DB writes to finish."""
+        with self._event_lock:
+            if self._stop_event.is_set():
+                return None
+            return fn(*args, **kwargs)
 
 
 def get_daemon_state(config: BlackBoxConfig) -> Optional[DaemonState]:
@@ -166,6 +250,7 @@ class BlackBoxDaemon:
         self.blob_store = BlobStore(config.blobs_dir)
         self._lock = Lock()
         self._stop_event = ThreadEvent()
+        self.controller = GracefulDaemonController()
         self._installed_git_hook = False
 
         self.fs_watcher = FileSystemWatcher(
@@ -195,6 +280,10 @@ class BlackBoxDaemon:
         Returns:
             Persisted Event with DB ID and hash-chain fields.
         """
+        res = self.controller.execute_atomic_event(self._handle_event_locked, event)
+        return res if res is not None else event
+
+    def _handle_event_locked(self, event: Event) -> Event:
         prior_risk = float(event.risk_score)
         classify_event(event)
         score_event(event)
@@ -215,6 +304,7 @@ class BlackBoxDaemon:
 
     def start(self) -> DaemonState:
         """Start all watchers and write daemon state file."""
+        self.controller.install_signal_handlers()
         _stop_file(self.config).unlink(missing_ok=True)
         self.fs_watcher.start()
         if (self.config.workspace_path / ".git").is_dir():
@@ -239,11 +329,13 @@ class BlackBoxDaemon:
         sf = _state_file(self.config)
         sf.parent.mkdir(parents=True, exist_ok=True)
         sf.write_text(json.dumps(asdict(state), indent=2), encoding="utf-8")
+        _pid_file(self.config).write_text(str(os.getpid()), encoding="utf-8")
         logger.info("daemon_started", session_id=self.session_id, pid=state.pid)
         return state
 
     def stop(self) -> None:
         """Stop all watchers, finalize session, and remove sentinel files."""
+        self.controller.request_stop()
         self._stop_event.set()
         if self.fs_watcher.is_running:
             self.fs_watcher.stop()
@@ -255,7 +347,9 @@ class BlackBoxDaemon:
         session = self.store.get_session(self.session_id)
         if session and session.status == "recording":
             self.store.stop_session(self.session_id)
+        self.store.close()
 
+        _pid_file(self.config).unlink(missing_ok=True)
         _state_file(self.config).unlink(missing_ok=True)
         _stop_file(self.config).unlink(missing_ok=True)
         logger.info("daemon_stopped", session_id=self.session_id)
@@ -265,7 +359,7 @@ class BlackBoxDaemon:
         self.start()
         stop_sentinel = _stop_file(self.config)
         try:
-            while not self._stop_event.wait(0.2):
+            while not self._stop_event.wait(0.2) and not self.controller.should_stop:
                 if stop_sentinel.exists():
                     break
         finally:
@@ -305,6 +399,7 @@ def start_background_daemon(
         agent_hint=agent_hint,
     )
     store.create_session(session)
+    store.close()
 
     log_path = _log_file(config)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -323,30 +418,29 @@ def start_background_daemon(
     if agent_hint:
         cmd.extend(["--agent", agent_hint])
 
-    popen_kwargs: dict = {
-        "cwd": str(config.workspace_path),
-        "stdin": subprocess.DEVNULL,
-    }
-    if sys.platform == "win32":
-        popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
-    else:
-        popen_kwargs["start_new_session"] = True
-
-    with open(log_path, "a", encoding="utf-8") as log_fp:
-        popen_kwargs["stdout"] = log_fp
-        popen_kwargs["stderr"] = log_fp
-        proc = subprocess.Popen(cmd, **popen_kwargs)
+    pid_path = _pid_file(config)
+    state_path = _state_file(config)
+    proc_pid = spawn_detached_daemon(
+        cmd=cmd,
+        log_path=log_path,
+        state_path=state_path,
+        pid_path=pid_path,
+        session_id=session.id,
+        env=os.environ.copy(),
+    )
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         state = get_daemon_state(config)
-        if state and state.session_id == session.id:
+        if state and state.session_id == session.id and state.workspace_path:
             return state
-        if proc.poll() is not None:
+        if not is_pid_alive(proc_pid):
             break
         time.sleep(0.1)
 
-    store.stop_session(session.id)
+    fail_store = EventStore(config.db_path)
+    fail_store.stop_session(session.id)
+    fail_store.close()
     raise RuntimeError(f"Daemon failed to start within {timeout}s. Check {log_path}.")
 
 
@@ -371,6 +465,7 @@ def stop_background_daemon(config: BlackBoxConfig, timeout: float = 5.0) -> Opti
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if not is_pid_alive(state.pid) and not _state_file(config).exists():
+            _pid_file(config).unlink(missing_ok=True)
             return state
         time.sleep(0.1)
 
@@ -387,7 +482,10 @@ def stop_background_daemon(config: BlackBoxConfig, timeout: float = 5.0) -> Opti
     except OSError:
         pass
 
-    EventStore(config.db_path).stop_session(state.session_id)
+    stop_store = EventStore(config.db_path)
+    stop_store.stop_session(state.session_id)
+    stop_store.close()
+    _pid_file(config).unlink(missing_ok=True)
     _state_file(config).unlink(missing_ok=True)
     _stop_file(config).unlink(missing_ok=True)
     return state

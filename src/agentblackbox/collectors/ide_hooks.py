@@ -176,3 +176,4 @@ class UniversalIDECollector:
                 except json.JSONDecodeError:
                     continue
         return events
+

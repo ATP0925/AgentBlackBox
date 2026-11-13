@@ -5,14 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "abb-recorder"
 version = "0.3.0"
-description = "The flight recorder for autonomous AI agents"
+description = "Local-first audit & replay flight recorder for AI coding agents — automatically redact secrets, track file & command diffs, score command risk, and verify session timelines."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [
     { name = "Pratik Atpadkar" },
 ]
-keywords = ["ai", "agents", "security", "forensics", "devtools"]
+keywords = ["ai-agents", "claude-code", "audit-log", "secret-detection", "flight-recorder", "security", "python", "observability"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
