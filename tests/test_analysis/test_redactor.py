@@ -1,5 +1,6 @@
 """Tests for secret redaction (redact-first-store-later)."""
 
+from pathlib import Path
 from agentblackbox.analysis.redactor import redact_bytes, redact_payload, redact_text
 
 
@@ -214,4 +215,83 @@ class TestRedactPayloadAndBytes:
         salt_bytes = _get_or_create_secret_salt()
         assert len(salt_bytes) >= 16
         assert salt_bytes != b"agentblackbox-audit-salt-v1"
+
+    def test_pwd_path_not_redacted_while_nonpath_pwd_is_redacted(self) -> None:
+        """Terminal PWD environment variable paths must NOT be redacted."""
+        payload = {
+            "PWD": "/home/user/workspace/AgentBlackBox",
+            "pwd": "C:\\Users\\alice\\AppData\\Local\\project",
+            "working_pwd": "/var/log/app",
+            "secret_pwd": "cleartextPassword99!",
+            "pwd_secret": "plainPassword456!",
+        }
+        clean, matches = redact_payload(payload)
+        # Working directories must remain untouched
+        assert clean["PWD"] == "/home/user/workspace/AgentBlackBox"
+        assert clean["pwd"] == "C:\\Users\\alice\\AppData\\Local\\project"
+        assert clean["working_pwd"] == "/var/log/app"
+
+        # Non-path credentials with pwd in name must be redacted
+        assert clean["secret_pwd"] == "[REDACTED:secret_pwd]"
+        assert clean["pwd_secret"] == "[REDACTED:pwd_secret]"
+
+    def test_llm_token_keys_and_non_secret_terms_unredacted(self) -> None:
+        """LLM usage statistics and non-secret terms must remain unredacted."""
+        payload = {
+            "input_tokens": 1500,
+            "output_tokens": 350,
+            "completion_tokens": 350,
+            "total_tokens": 1850,
+            "cache_read_input_tokens": 800,
+            "cache_creation_input_tokens": 200,
+            "tokenizer": "cl100k_base",
+            "password_length": 16,
+            "password_policy": "min_16_with_special",
+            "secret_santa": "Charlie",
+            # Real secrets alongside
+            "aws_secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            "db_password": "supersecretpassword1",
+            "github_token": "ghp_123456789012345678901234567890123456",
+        }
+        clean, matches = redact_payload(payload)
+        # LLM stats & safe terms unredacted
+        assert clean["input_tokens"] == 1500
+        assert clean["output_tokens"] == 350
+        assert clean["completion_tokens"] == 350
+        assert clean["total_tokens"] == 1850
+        assert clean["cache_read_input_tokens"] == 800
+        assert clean["cache_creation_input_tokens"] == 200
+        assert clean["tokenizer"] == "cl100k_base"
+        assert clean["password_length"] == 16
+        assert clean["password_policy"] == "min_16_with_special"
+        assert clean["secret_santa"] == "Charlie"
+
+        # Actual secrets must be redacted
+        assert clean["aws_secret_access_key"] == "[REDACTED:aws_secret_access_key]"
+        assert clean["db_password"] == "[REDACTED:db_password]"
+        assert clean["github_token"] == "[REDACTED:github_token]"
+
+    def test_salt_file_isolation_in_tmp_path(self, tmp_path: Path, monkeypatch) -> None:
+        """Salt file must be written to configured/isolated home, not developer real home."""
+        import agentblackbox.analysis.secret_detector as sd
+        fake_home = tmp_path / "fake_home"
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+        monkeypatch.setattr(sd, "_CACHED_SALT", None)
+        monkeypatch.delenv("ABB_SECRET_SALT", raising=False)
+
+        salt = sd._get_or_create_secret_salt()
+        assert len(salt) == 64  # 32-byte token_hex is 64 hex chars
+        salt_file = fake_home / ".agentblackbox" / ".secret_salt"
+        assert salt_file.exists()
+        assert salt_file.read_text(encoding="utf-8").strip() == salt.decode("utf-8")
+
+    def test_no_hardcoded_default_salt_in_source(self) -> None:
+        """Source tree must contain zero hardcoded salt fallback strings."""
+        from pathlib import Path
+        src_dir = Path(__file__).parent.parent.parent / "src" / "agentblackbox"
+        assert src_dir.exists()
+        for py_file in src_dir.rglob("*.py"):
+            content = py_file.read_text(encoding="utf-8")
+            assert "agentblackbox-audit-salt" not in content, f"Hardcoded salt string found in {py_file}"
 

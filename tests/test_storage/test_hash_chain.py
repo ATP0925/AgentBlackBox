@@ -1,5 +1,6 @@
 """Tests for tamper-evident hash chain, attribution columns, redaction, and migration."""
 
+import json
 import sqlite3
 import pytest
 from pathlib import Path
@@ -313,7 +314,7 @@ class TestHashChainAndAttribution:
             # Verification with wrong key fails because hash is keyed HMAC
             wrong_res = store.verify_chain(sess.id, hmac_key=b"wrong-key-000000000000")
             assert wrong_res.valid is False
-            assert "event_hash mismatch" in (wrong_res.reason or "")
+            assert "mismatch" in (wrong_res.reason or "").lower()
         finally:
             os.environ.pop("ABB_HMAC_KEY", None)
 
@@ -377,6 +378,180 @@ class TestHashChainAndAttribution:
         valid_res = store.verify_chain(sess.id, hmac_key=key)
         assert valid_res.valid is True
 
+    def test_attacker_clears_is_keyed_and_recomputes_plain_chain_fails_when_key_configured(
+        self, tmp_path: Path
+    ) -> None:
+        """Attacker clearing sessions.is_keyed=0 and writing plain SHA256 hashes must fail when key is configured."""
+        import os
+        from agentblackbox.storage.models import _compute_event_hash
+        db_path = tmp_path / "tamper_keyed.db"
+        store = EventStore(db_path)
+        sess = Session(workspace_path=str(tmp_path))
+        key = b"strong-audit-key-12345"
+        os.environ["ABB_HMAC_KEY"] = key.decode("utf-8")
+        try:
+            store.create_session(sess)
+            e1 = store.insert_event(Event(
+                session_id=sess.id,
+                event_type=EventType.CMD_EXECUTE,
+                payload={"cmd": "git status"},
+            ))
+            assert store.verify_chain(sess.id, hmac_key=key).valid is True
+
+            # Attacker opens SQLite directly, sets is_keyed = 0, and recomputes plain SHA-256 event_hash
+            plain_hash = _compute_event_hash(e1, hmac_key=None)  # unkeyed
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.execute(
+                    "UPDATE sessions SET is_keyed = 0 WHERE id = ?", (sess.id,)
+                )
+                conn.execute(
+                    "UPDATE events SET event_hash = ? WHERE id = ?", (plain_hash, e1.id)
+                )
+                conn.commit()
+
+            # Verifier runs with configured key: MUST FAIL!
+            res = store.verify_chain(sess.id, hmac_key=key)
+            assert res.valid is False
+            assert "mismatch" in (res.reason or "").lower() or "tampering" in (res.reason or "").lower()
+        finally:
+            os.environ.pop("ABB_HMAC_KEY", None)
+
+    def test_attacker_raises_v1_max_seq_detected_when_key_configured(
+        self, tmp_path: Path
+    ) -> None:
+        """Attacker modifying sessions.v1_max_seq directly in SQLite must fail meta_mac verification."""
+        import os
+        from agentblackbox.storage.models import _compute_event_hash_v1
+        db_path = tmp_path / "tamper_v1_max.db"
+        store = EventStore(db_path)
+        sess = Session(workspace_path=str(tmp_path))
+        key = b"strong-audit-key-12345"
+        os.environ["ABB_HMAC_KEY"] = key.decode("utf-8")
+        try:
+            store.create_session(sess)
+            e1 = store.insert_event(Event(
+                session_id=sess.id,
+                event_type=EventType.CMD_EXECUTE,
+                payload={"cmd": "pwd"},
+            ))
+            assert store.verify_chain(sess.id, hmac_key=key).valid is True
+
+            # Attacker sets v1_max_seq = 10 and changes e1 to hash_version=1 with v1 hash
+            fake_v1_hash = _compute_event_hash_v1(e1)
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.execute(
+                    "UPDATE sessions SET v1_max_seq = 10 WHERE id = ?", (sess.id,)
+                )
+                conn.execute(
+                    "UPDATE events SET hash_version = 1, event_hash = ? WHERE id = ?",
+                    (fake_v1_hash, e1.id),
+                )
+                conn.commit()
+
+            # Verification must fail because session metadata was tampered or meta_mac mismatch
+            res = store.verify_chain(sess.id, hmac_key=key)
+            assert res.valid is False
+            assert "tampering" in (res.reason or "").lower() or "mismatch" in (res.reason or "").lower()
+        finally:
+            os.environ.pop("ABB_HMAC_KEY", None)
+
+    def test_upgrade_legacy_db_v1_rows_verify_after_migration(self, tmp_path: Path) -> None:
+        """A legacy v0.2.0a1-style database must cleanly backfill v1_max_seq and verify both old and new events."""
+        import json
+        from agentblackbox.storage.models import _compute_event_hash_v1, _hash_payload
+
+        db_path = tmp_path / "legacy_v01.db"
+        # 1. Create a legacy table without v1_max_seq, is_keyed, meta_mac
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute(
+                """CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    name TEXT,
+                    workspace_path TEXT NOT NULL,
+                    agent_hint TEXT,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT,
+                    status TEXT DEFAULT 'recording',
+                    total_events INTEGER DEFAULT 0,
+                    risk_score REAL DEFAULT 0.0
+                )"""
+            )
+            conn.execute(
+                """CREATE TABLE events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL REFERENCES sessions(id),
+                    seq INTEGER DEFAULT 0,
+                    timestamp TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    severity TEXT DEFAULT 'info',
+                    risk_score REAL DEFAULT 0.0,
+                    source_path TEXT,
+                    payload TEXT,
+                    payload_hash TEXT,
+                    prev_hash TEXT DEFAULT '',
+                    event_hash TEXT DEFAULT '',
+                    agent_id TEXT,
+                    pid INTEGER,
+                    parent_event_id INTEGER,
+                    blob_hash TEXT,
+                    tags TEXT
+                )"""
+            )
+            sess_id = "sess-legacy-123"
+            conn.execute(
+                "INSERT INTO sessions (id, workspace_path, started_at) VALUES (?, ?, ?)",
+                (sess_id, str(tmp_path), "2026-11-10T10:00:00Z"),
+            )
+            # Insert 2 legacy v1 events
+            p1 = {"cmd": "init"}
+            e1 = Event(
+                session_id=sess_id, seq=1, timestamp="2026-11-10T10:00:01Z",
+                event_type=EventType.CMD_EXECUTE, payload=p1, payload_hash=_hash_payload(p1),
+                prev_hash="GENESIS",
+            )
+            h1 = _compute_event_hash_v1(e1)
+            conn.execute(
+                """INSERT INTO events (session_id, seq, timestamp, event_type, payload, payload_hash, prev_hash, event_hash)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (sess_id, 1, e1.timestamp, e1.event_type, json.dumps(p1), e1.payload_hash, "GENESIS", h1),
+            )
+
+            p2 = {"cmd": "build"}
+            e2 = Event(
+                session_id=sess_id, seq=2, timestamp="2026-11-10T10:00:02Z",
+                event_type=EventType.CMD_EXECUTE, payload=p2, payload_hash=_hash_payload(p2),
+                prev_hash=h1,
+            )
+            h2 = _compute_event_hash_v1(e2)
+            conn.execute(
+                """INSERT INTO events (session_id, seq, timestamp, event_type, payload, payload_hash, prev_hash, event_hash)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (sess_id, 2, e2.timestamp, e2.event_type, json.dumps(p2), e2.payload_hash, h1, h2),
+            )
+            conn.commit()
+
+        # 2. Now open with new EventStore code - migration must run automatically
+        store = EventStore(db_path)
+        sess = store.get_session(sess_id)
+        assert sess is not None
+        assert sess.v1_max_seq == 2  # Migration backfilled cutoff!
+
+        # 3. Old v1 events must pass verification
+        res = store.verify_chain(sess_id)
+        assert res.valid is True
+        assert res.total_events == 2
+
+        # 4. Appending a new event should create a canonical v2 event and verify cleanly
+        new_ev = store.insert_event(Event(
+            session_id=sess_id,
+            event_type=EventType.CMD_EXECUTE,
+            payload={"cmd": "deploy"},
+        ))
+        assert new_ev.hash_version == 2
+        res2 = store.verify_chain(sess_id)
+        assert res2.valid is True
+        assert res2.total_events == 3
+
     def test_checkpoint_detects_tail_truncation(
         self, store: EventStore, sample_session: Session
     ) -> None:
@@ -409,6 +584,92 @@ class TestHashChainAndAttribution:
         assert res.valid is False
         assert "Tail truncation detected" in (res.reason or "")
         assert "5 events" in (res.reason or "")
+
+    def test_tampered_checkpoint_signature_fails_verification(
+        self, tmp_path: Path
+    ) -> None:
+        """Checkpoint signature tampering must be caught during verification."""
+        import os
+        db_path = tmp_path / "sig_test.db"
+        store = EventStore(db_path)
+        sess = Session(workspace_path=str(tmp_path))
+        key = b"checkpoint-signing-key-12345"
+        os.environ["ABB_HMAC_KEY"] = key.decode("utf-8")
+        try:
+            store.create_session(sess)
+            store.insert_event(Event(
+                session_id=sess.id,
+                event_type=EventType.CMD_EXECUTE,
+                payload={"cmd": "ls"},
+            ))
+            cp_file = store.checkpoint_chain_tip(sess.id, hmac_key=key)
+            assert cp_file.exists()
+
+            # Clean verification with genuine checkpoint
+            res = store.verify_chain(sess.id, hmac_key=key, checkpoint_path=cp_file)
+            assert res.valid is True
+            assert "signed" in (res.notes or "").lower()
+
+            # Attacker alters the signature in the checkpoint file
+            cp_data = json.loads(cp_file.read_text(encoding="utf-8"))
+            cp_data["signature"] = "deadbeef" * 8
+            cp_file.write_text(json.dumps(cp_data), encoding="utf-8")
+
+            # Verification must fail on tampered checkpoint signature
+            bad_res = store.verify_chain(sess.id, hmac_key=key, checkpoint_path=cp_file)
+            assert bad_res.valid is False
+            assert "checkpoint signature tampering" in (bad_res.reason or "").lower()
+        finally:
+            os.environ.pop("ABB_HMAC_KEY", None)
+
+    def test_missing_checkpoint_reports_truncation_not_checked(
+        self, store: EventStore, sample_session: Session
+    ) -> None:
+        """When no checkpoint exists, verify_chain notes that truncation check was not performed."""
+        store.create_session(sample_session)
+        store.insert_event(Event(
+            session_id=sample_session.id,
+            event_type=EventType.CMD_EXECUTE,
+            payload={"cmd": "whoami"},
+        ))
+        res = store.verify_chain(sample_session.id, checkpoint_path=Path("nonexistent/checkpoint.tip"))
+        assert res.valid is True
+        assert res.notes == "truncation check not performed, no checkpoint"
+
+    def test_require_keyed_policy_enforcement(
+        self, store: EventStore, sample_session: Session
+    ) -> None:
+        """require_keyed=True must enforce HMAC key requirement."""
+        store.create_session(sample_session)
+        store.insert_event(Event(
+            session_id=sample_session.id,
+            event_type=EventType.CMD_EXECUTE,
+            payload={"cmd": "date"},
+        ))
+        # Plain verify passes
+        assert store.verify_chain(sample_session.id).valid is True
+
+        # Policy require_keyed fails without key
+        res = store.verify_chain(sample_session.id, require_keyed=True)
+        assert res.valid is False
+        assert "Verification policy failure" in (res.reason or "")
+
+    def test_auto_checkpoint_on_stop_session(
+        self, store: EventStore, sample_session: Session
+    ) -> None:
+        """Calling stop_session must automatically generate a checkpoint tip file."""
+        store.create_session(sample_session)
+        store.insert_event(Event(
+            session_id=sample_session.id,
+            event_type=EventType.CMD_EXECUTE,
+            payload={"cmd": "exit"},
+        ))
+        store.stop_session(sample_session.id)
+        cp_file = store.db_path.parent / "checkpoints" / f"{sample_session.id}.tip"
+        assert cp_file.exists()
+        cp = json.loads(cp_file.read_text(encoding="utf-8"))
+        assert cp["session_id"] == sample_session.id
+        assert cp["last_seq"] == 1
 
     def test_multiprocess_concurrent_inserts_valid_chain(
         self, tmp_path: Path

@@ -19,6 +19,7 @@ from agentblackbox.storage.models import (
     Severity,
     _compute_event_hash,
     _compute_event_hash_v1,
+    _compute_session_meta_mac,
     _hash_payload,
     _utcnow,
 )
@@ -37,7 +38,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     total_events    INTEGER DEFAULT 0,
     risk_score      REAL DEFAULT 0.0,
     v1_max_seq      INTEGER DEFAULT 0,
-    is_keyed        INTEGER DEFAULT 0
+    is_keyed        INTEGER DEFAULT 0,
+    meta_mac        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -109,6 +111,7 @@ _EVENT_MIGRATION_COLUMNS: List[Tuple[str, str]] = [
 _SESSION_MIGRATION_COLUMNS: List[Tuple[str, str]] = [
     ("v1_max_seq", "INTEGER DEFAULT 0"),
     ("is_keyed", "INTEGER DEFAULT 0"),
+    ("meta_mac", "TEXT"),
 ]
 
 
@@ -209,18 +212,28 @@ class EventStore:
         Returns:
             The same session (with id set).
         """
-        is_keyed = 1 if (os.environ.get("ABB_HMAC_KEY") or getattr(session, "is_keyed", False)) else 0
+        active_key = (
+            os.environ.get("ABB_HMAC_KEY").encode("utf-8")
+            if os.environ.get("ABB_HMAC_KEY")
+            else None
+        )
+        is_keyed = 1 if (active_key or getattr(session, "is_keyed", False)) else 0
         v1_max_seq = getattr(session, "v1_max_seq", 0)
+        meta_mac = getattr(session, "meta_mac", None)
+        if active_key and not meta_mac:
+            meta_mac = _compute_session_meta_mac(session.id, is_keyed, v1_max_seq, active_key)
+        session.is_keyed = bool(is_keyed)
+        session.meta_mac = meta_mac
         with self._connect() as conn:
             conn.execute(
                 """INSERT INTO sessions (id, name, workspace_path, agent_hint,
-                   started_at, ended_at, status, total_events, risk_score, v1_max_seq, is_keyed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   started_at, ended_at, status, total_events, risk_score, v1_max_seq, is_keyed, meta_mac)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session.id, session.name, session.workspace_path,
                     session.agent_hint, session.started_at, session.ended_at,
                     session.status, session.total_events, session.risk_score,
-                    v1_max_seq, is_keyed,
+                    v1_max_seq, is_keyed, meta_mac,
                 ),
             )
         logger.info("session_created", session_id=session.id)
@@ -251,6 +264,7 @@ class EventStore:
             risk_score=row["risk_score"],
             v1_max_seq=row["v1_max_seq"] if "v1_max_seq" in keys and row["v1_max_seq"] is not None else 0,
             is_keyed=bool(row["is_keyed"]) if "is_keyed" in keys and row["is_keyed"] is not None else False,
+            meta_mac=row["meta_mac"] if "meta_mac" in keys and row["meta_mac"] is not None else None,
         )
 
     def list_sessions(self, limit: int = 50) -> List[Session]:
@@ -277,22 +291,26 @@ class EventStore:
                 risk_score=r["risk_score"],
                 v1_max_seq=r["v1_max_seq"] if "v1_max_seq" in r.keys() and r["v1_max_seq"] is not None else 0,
                 is_keyed=bool(r["is_keyed"]) if "is_keyed" in r.keys() and r["is_keyed"] is not None else False,
+                meta_mac=r["meta_mac"] if "meta_mac" in r.keys() and r["meta_mac"] is not None else None,
             )
             for r in rows
         ]
 
     def stop_session(self, session_id: str) -> None:
-        """Mark a session as stopped with current timestamp.
+        """Mark a session as stopped with current timestamp and auto-checkpoint the tip.
 
         Args:
             session_id: The session to stop.
         """
-        from agentblackbox.storage.models import _utcnow
         with self._connect() as conn:
             conn.execute(
                 "UPDATE sessions SET status = 'stopped', ended_at = ? WHERE id = ?",
                 (_utcnow(), session_id),
             )
+        try:
+            self.checkpoint_chain_tip(session_id)
+        except Exception as exc:
+            logger.warning("auto_checkpoint_warning", session_id=session_id, error=str(exc))
         logger.info("session_stopped", session_id=session_id)
 
     # ---------- Event Preparation & Chain Helpers ----------
@@ -386,12 +404,23 @@ class EventStore:
                         )
 
                     keyed_flag = 1 if os.environ.get("ABB_HMAC_KEY") else 0
-                    conn.execute(
-                        """UPDATE sessions SET total_events = total_events + 1,
-                           risk_score = MAX(risk_score, ?),
-                           is_keyed = MAX(is_keyed, ?) WHERE id = ?""",
-                        (event.risk_score, keyed_flag, event.session_id),
-                    )
+                    if keyed_flag:
+                        active_key = os.environ["ABB_HMAC_KEY"].encode("utf-8")
+                        cur_mac = _compute_session_meta_mac(event.session_id, 1, 0, active_key)
+                        conn.execute(
+                            """UPDATE sessions SET total_events = total_events + 1,
+                               risk_score = MAX(risk_score, ?),
+                               is_keyed = 1,
+                               meta_mac = COALESCE(meta_mac, ?) WHERE id = ?""",
+                            (event.risk_score, cur_mac, event.session_id),
+                        )
+                    else:
+                        conn.execute(
+                            """UPDATE sessions SET total_events = total_events + 1,
+                               risk_score = MAX(risk_score, ?),
+                               is_keyed = MAX(is_keyed, ?) WHERE id = ?""",
+                            (event.risk_score, keyed_flag, event.session_id),
+                        )
                 return event
             except (sqlite3.OperationalError, sqlite3.IntegrityError) as e:
                 last_err = e
@@ -457,20 +486,37 @@ class EventStore:
 
             keyed_flag = 1 if os.environ.get("ABB_HMAC_KEY") else 0
             for sid, cnt in counts.items():
-                conn.execute(
-                    """UPDATE sessions SET total_events = total_events + ?,
-                       risk_score = MAX(risk_score, ?),
-                       is_keyed = MAX(is_keyed, ?) WHERE id = ?""",
-                    (cnt, max_risks[sid], keyed_flag, sid),
-                )
+                if keyed_flag:
+                    active_key = os.environ["ABB_HMAC_KEY"].encode("utf-8")
+                    cur_mac = _compute_session_meta_mac(sid, 1, 0, active_key)
+                    conn.execute(
+                        """UPDATE sessions SET total_events = total_events + ?,
+                           risk_score = MAX(risk_score, ?),
+                           is_keyed = 1,
+                           meta_mac = COALESCE(meta_mac, ?) WHERE id = ?""",
+                        (cnt, max_risks[sid], cur_mac, sid),
+                    )
+                else:
+                    conn.execute(
+                        """UPDATE sessions SET total_events = total_events + ?,
+                           risk_score = MAX(risk_score, ?),
+                           is_keyed = MAX(is_keyed, ?) WHERE id = ?""",
+                        (cnt, max_risks[sid], keyed_flag, sid),
+                    )
 
-    def checkpoint_chain_tip(self, session_id: str, checkpoint_path: Optional[Path] = None) -> Path:
+    def checkpoint_chain_tip(
+        self,
+        session_id: str,
+        checkpoint_path: Optional[Path] = None,
+        hmac_key: Optional[bytes] = None,
+    ) -> Path:
         """Write head-tip checkpoint to an external anchor file to detect tail truncation.
 
         Args:
             session_id: Session ID to checkpoint.
             checkpoint_path: Path to write checkpoint JSON. Defaults to
                 ``<db_parent>/checkpoints/<session_id>.tip``.
+            hmac_key: Optional HMAC key to sign the checkpoint tip.
 
         Returns:
             Path to the written checkpoint file.
@@ -489,12 +535,25 @@ class EventStore:
         cp_file = checkpoint_path or (cp_dir / f"{session_id}.tip")
         cp_file.parent.mkdir(parents=True, exist_ok=True)
 
+        active_key = hmac_key or (
+            os.environ.get("ABB_HMAC_KEY").encode("utf-8")
+            if os.environ.get("ABB_HMAC_KEY")
+            else None
+        )
+        sig: Optional[str] = None
+        if active_key:
+            import hmac
+            import hashlib
+            payload = f"{session_id}:{last_seq}:{head_hash}:{ts}"
+            sig = hmac.new(active_key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
         data = {
             "session_id": session_id,
             "last_seq": last_seq,
             "head_hash": head_hash,
             "checkpoint_time": _utcnow(),
             "event_time": ts,
+            "signature": sig,
         }
         cp_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
         try:
@@ -509,6 +568,7 @@ class EventStore:
         verify_blobs: bool = True,
         hmac_key: Optional[bytes] = None,
         checkpoint_path: Optional[Path] = None,
+        require_keyed: bool = False,
     ) -> ChainVerificationResult:
         """Verify sequence continuity, payload integrity, and hash-chain linkage.
 
@@ -518,6 +578,7 @@ class EventStore:
             hmac_key: Optional HMAC key for HMAC-SHA256 chain verification.
             checkpoint_path: Optional path to external tip checkpoint file. Defaults to
                 checking ``<db_parent>/checkpoints/<session_id>.tip`` if it exists.
+            require_keyed: If True, fails verification if session was recorded without HMAC key.
 
         Returns:
             ChainVerificationResult indicating validity and failure reason if tampered.
@@ -532,13 +593,35 @@ class EventStore:
             ).fetchall()
 
         if not rows:
-            return ChainVerificationResult(session_id=session_id, valid=True, total_events=0)
+            return ChainVerificationResult(
+                session_id=session_id, valid=True, total_events=0, notes="empty session"
+            )
 
         s_keys = session_row.keys() if session_row else []
         v1_cutoff_seq = session_row["v1_max_seq"] if session_row and "v1_max_seq" in s_keys and session_row["v1_max_seq"] is not None else 0
         is_keyed = bool(session_row["is_keyed"]) if session_row and "is_keyed" in s_keys and session_row["is_keyed"] is not None else False
+        stored_meta_mac = session_row["meta_mac"] if session_row and "meta_mac" in s_keys and session_row["meta_mac"] else None
 
         active_key = hmac_key or (os.environ.get("ABB_HMAC_KEY").encode("utf-8") if os.environ.get("ABB_HMAC_KEY") else None)
+
+        if require_keyed and not active_key:
+            return ChainVerificationResult(
+                session_id=session_id,
+                valid=False,
+                total_events=len(rows),
+                broken_at_seq=1,
+                reason="Verification policy failure: require_keyed=True but no HMAC key was provided or configured",
+            )
+
+        if require_keyed and not is_keyed:
+            return ChainVerificationResult(
+                session_id=session_id,
+                valid=False,
+                total_events=len(rows),
+                broken_at_seq=1,
+                reason="Verification policy failure: require_keyed=True but session was recorded without HMAC key",
+            )
+
         if is_keyed and not active_key:
             return ChainVerificationResult(
                 session_id=session_id,
@@ -547,6 +630,29 @@ class EventStore:
                 broken_at_seq=1,
                 reason="HMAC verification failure: session was recorded with HMAC key but no verification key was provided",
             )
+
+        if active_key:
+            import hmac
+            if stored_meta_mac:
+                expected_meta_mac = _compute_session_meta_mac(
+                    session_id, 1 if is_keyed else 0, v1_cutoff_seq, active_key
+                )
+                if not hmac.compare_digest(stored_meta_mac, expected_meta_mac):
+                    return ChainVerificationResult(
+                        session_id=session_id,
+                        valid=False,
+                        total_events=len(rows),
+                        broken_at_seq=1,
+                        reason="Session metadata tampering detected: meta_mac mismatch on (is_keyed, v1_max_seq)",
+                    )
+            elif is_keyed and len(rows) > 0:
+                return ChainVerificationResult(
+                    session_id=session_id,
+                    valid=False,
+                    total_events=len(rows),
+                    broken_at_seq=1,
+                    reason="Session metadata tampering detected: missing meta_mac on keyed session",
+                )
 
         expected_prev = "GENESIS"
         for idx, row in enumerate(rows, start=1):
@@ -612,9 +718,23 @@ class EventStore:
 
         # External tip checkpoint verification (detects tail truncation)
         cp_file = checkpoint_path or (self.db_path.parent / "checkpoints" / f"{session_id}.tip")
+        checkpoint_notes: Optional[str] = None
         if cp_file.exists():
             try:
                 cp = json.loads(cp_file.read_text(encoding="utf-8"))
+                if active_key and cp.get("signature"):
+                    import hmac
+                    import hashlib
+                    payload = f"{session_id}:{cp.get('last_seq')}:{cp.get('head_hash')}:{cp.get('event_time')}"
+                    expected_sig = hmac.new(active_key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+                    if not hmac.compare_digest(cp["signature"], expected_sig):
+                        return ChainVerificationResult(
+                            session_id=session_id,
+                            valid=False,
+                            total_events=len(rows),
+                            broken_at_seq=len(rows),
+                            reason="Checkpoint signature tampering detected: signature mismatch on checkpoint file",
+                        )
                 expected_count = int(cp.get("last_seq", 0))
                 if len(rows) < expected_count:
                     return ChainVerificationResult(
@@ -632,13 +752,18 @@ class EventStore:
                         broken_at_seq=len(rows),
                         reason=f"Tip mismatch: database head hash ({rows[-1]['event_hash'][:10]}...) does not match checkpoint tip ({cp['head_hash'][:10]}...)",
                     )
+                checkpoint_notes = "checkpoint tip verified (signed)" if cp.get("signature") else "checkpoint tip verified"
             except Exception as e:
                 logger.warning("checkpoint_read_error", error=str(e))
+                checkpoint_notes = f"checkpoint read error: {e}"
+        else:
+            checkpoint_notes = "truncation check not performed, no checkpoint"
 
         return ChainVerificationResult(
             session_id=session_id,
             valid=True,
             total_events=len(rows),
+            notes=checkpoint_notes,
         )
 
     def get_file_snapshots(

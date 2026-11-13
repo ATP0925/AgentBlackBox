@@ -6,7 +6,7 @@
 
 > Every autonomous system needs a black box.
 
-**Status:** `v0.2.0a3` (Live background daemon, redact-first storage, tamper-evident hash chain with HMAC signing, watermark downgrade protection, external tip checkpointing, content-addressed blob store, git & terminal recording, Claude Code attribution hooks, and localhost Bearer-auth API — **116 tests passing**.)
+**Status:** `v0.2.0a4` (Live background daemon, redact-first storage, tamper-evident hash chain with HMAC session metadata protection (`session_meta_mac`), watermark downgrade protection, external signed tip checkpointing, auto-checkpoint on stop, content-addressed blob store, git & terminal recording, Claude Code attribution hooks, and localhost Bearer-auth API — **128 tests passing**.)
 
 ---
 
@@ -20,15 +20,16 @@ AgentBlackBox records OS-level agent actions on the developer machine and lets y
 
 ## Features (`v0.2`)
 
-- 🔄 **Live Background Daemon (`daemon/core.py`)** — `abb start` launches a detached background recorder (`FileSystemWatcher` + `GitObserver`) and `abb stop` shuts it down cleanly
-- 🔒 **Redact-First → Store-Later (`analysis/redactor.py`)** — Redacts secrets (`[REDACTED:<type>]`) from event payloads, command outputs, and file snapshots *before* hashing or writing to SQLite/disk
-- ⛓️ **Tamper-Evident Hash Chain (`verify_chain`, `abb verify`)** — Monotonic per-session `seq` + chained `prev_hash` / `event_hash` (SHA-256) to detect DB edits or deletions
+- 🔄 **Live Background Daemon (`daemon/core.py`)** — `abb start` launches a detached background recorder (`FileSystemWatcher` + `GitObserver`) and `abb stop` shuts it down cleanly and auto-checkpoints the chain tip
+- 🔒 **Redact-First → Store-Later (`analysis/redactor.py`)** — Redacts secrets (`[REDACTED:<type>]`) from event payloads, command outputs, and file snapshots *before* hashing or writing to SQLite/disk. Smart classification protects credentials while preserving working directory paths (`PWD`) and LLM token usage counters
+- ⛓️ **Tamper-Evident Hash Chain (`verify_chain`, `abb verify`)** — Monotonic per-session `seq` + chained `prev_hash` / `event_hash` (SHA-256 or HMAC-SHA256) with `meta_mac` protection over session flags to detect DB edits, direct SQLite flag manipulation, or sequence deletion
+- 📌 **External Signed Checkpoints (`abb export-checkpoint`, `abb verify --checkpoint`)** — Writes HMAC-signed head tip checkpoints (`<db_parent>/checkpoints/<session_id>.tip`) to detect tail truncation attacks
 - 📦 **Content-Addressed Blob Store (`storage/blob_store.py`)** — Deduplicated, secret-redacted file snapshots under `.agentblackbox/blobs/<sha256>` linked via `file_snapshots`
 - 💻 **Terminal Command Recorder (`abb run`, `watchers/terminal.py`)** — Captures command, exit code, stdout/stderr, PID, duration, and propagates `ABB_SESSION_ID` / `ABB_PARENT_EVENT_ID` / `ABB_AGENT_ID`
 - 🌿 **Git Observer (`watchers/git_observer.py`)** — Installs `reference-transaction` hook (preserving existing hooks) and polls `HEAD`/reflog for commits and resets
 - 🤖 **Agent Attribution (`watchers/agent_hooks.py`, `abb hook-install`)** — Installs Claude Code `PreToolUse` hooks into `.claude/settings.local.json` with `agent_id`, `pid`, and `parent_event_id` columns
 - 📁 **FileSystem Watcher (`watchers/filesystem.py`)** — Tracks file create, modify, delete, rename via `watchdog` with debouncing and SHA-256 dedup
-- 🔐 **Secret Detector & Risk Scorer (`analysis/`)** — 14 regex patterns + Shannon entropy + deterministic `0.0–10.0` scoring and alerts
+- 🔐 **Secret Detector & Risk Scorer (`analysis/`)** — 14 regex patterns + Shannon entropy + deterministic `0.0–10.0` scoring and alerts with dynamic random salt stored at `~/.agentblackbox/.secret_salt` (mode `0600`)
 - ⏮️ **Timeline Builder & Blame (`replay/`)** — Chronological session timelines and reverse-chronological file blame
 - 🌐 **Localhost FastAPI + WebSocket API (`api/`, `abb serve`)** — Bound explicitly to `127.0.0.1` with Bearer token auth (`ABB_API_TOKEN`)
 - 📄 **Exporters (`storage/export.py`)** — Standalone JSON, CSV, and dark-theme HTML reports
@@ -81,11 +82,12 @@ abb report <session_id> --format html
 | Command | Description |
 |---------|-------------|
 | `abb start` | Launch live background recording daemon |
-| `abb stop` | Stop background recording daemon & close session |
+| `abb stop` | Stop background recording daemon & auto-checkpoint tip |
 | `abb status` | Show live daemon status, PID, and event count |
 | `abb run -- <cmd>` | Execute a command with full output, redaction, and attribution |
 | `abb hook-install` | Install Claude Code `PreToolUse` attribution hook |
-| `abb verify <session_id>` | Verify tamper-evident event hash chain |
+| `abb verify <session_id>` | Verify tamper-evident event hash chain (`--checkpoint`, `--require-keyed`) |
+| `abb export-checkpoint <session_id>` | Export HMAC-signed head tip checkpoint JSON |
 | `abb sessions` | List recorded sessions |
 | `abb search <query>` | Search event payloads, paths, and tags |
 | `abb blame <file>` | Show file change history |
@@ -128,7 +130,7 @@ ABB_API_TOKEN="<your-token>" uvicorn agentblackbox.api.main:app --host 127.0.0.1
 python -m pytest tests/ -v --tb=short
 ```
 
-**116 tests passing** across tokenized key redactor, dynamic random salt HMAC fingerprinting, risk scoring, hash chain watermark downgrade protection, HMAC chain enforcement, external tip checkpointing, blob store, filesystem watcher, git observer & hooks, terminal recorder, agent hooks, background daemon, timeline, blame, API auth, and FastAPI routes.
+**128 tests passing** across tokenized key redactor, dynamic random salt HMAC fingerprinting, risk scoring, hash chain watermark downgrade protection, HMAC chain enforcement, session metadata MAC (`meta_mac`), external signed tip checkpointing, blob store, filesystem watcher, git observer & hooks, terminal recorder, agent hooks, background daemon, timeline, blame, API auth, and FastAPI routes.
 
 ---
 
@@ -138,12 +140,15 @@ AgentBlackBox is an **observability & forensic flight recorder** designed to cap
 
 ### What AgentBlackBox Solves (In Scope)
 - **Accidental & Runaway Damage:** Catches accidental recursive file deletions, unauthorized `.env` modifications, runaway git resets, and mass edits.
-- **Accidental Secret Leaks (Best-Effort):** 14 regex provider signatures + Shannon entropy redact sensitive tokens (`[REDACTED:<type>]`) before payloads or file snapshots are written to SQLite or blob disk.
+- **Accidental Secret Leaks (Best-Effort):** 14 regex provider signatures + Shannon entropy redact sensitive tokens (`[REDACTED:<type>]`) before payloads or file snapshots are written to SQLite or blob disk. Working directory paths (`PWD`) and LLM token usage counters are explicitly exempt from redaction.
+- **Secret Salt Hygiene:** HMAC secret fingerprints use a dynamic 256-bit random salt stored at `~/.agentblackbox/.secret_salt` with POSIX `0600` permissions (on Windows, user profile directory ACLs protect it; can be overridden via `ABB_SECRET_SALT`). Zero hardcoded default salt strings exist in source code.
 - **Forensic Reconstruction:** Provides full timeline replay, reverse-chronological file blame, and verifiable event sequences for post-mortems.
-- **Opportunistic & Naive Tampering:** A cryptographic SHA-256 linear hash chain detects SQLite row modifications, event tampering, out-of-order mutations, and middle-of-chain deletions via `abb verify <session_id>`.
+- **Chain Integrity & Attribution Protection:** A canonical v2 JSON hash covers sequence, predecessor, timestamp, event type, payload hash, source path, attribution fields (`agent_id`, `pid`, `parent_event_id`), blob references, severity, risk score, and tags. When configured with `ABB_HMAC_KEY`, HMAC-SHA256 signatures protect event hashes and session metadata (`session_meta_mac` covers `is_keyed` and migration cutoffs), detecting direct SQLite tampering.
+- **Tail-Truncation Defense:** External signed tip checkpoints (`abb export-checkpoint`, auto-generated on `abb stop`) verify head hash and total sequence length.
 
 ### Explicit Limitations & Out-of-Scope (Roadmap)
-- **Tail-Truncation & Same-UID Tampering:** If a malicious agent runs under the same OS user without container/VM sandboxing, it can write to `.agentblackbox/`. While middle-chain edits break hashes, deleting the tail of a session leaves the remaining sub-chain internally valid from `GENESIS`. Tail-truncation cannot be mathematically prevented locally without external head-hash anchoring (e.g. remote witness, RFC 3161 timestamping, or append-only signed checkpoints — planned for v0.3).
+- **Same-User Process Memory & Key Access:** When `ABB_HMAC_KEY` is configured in the environment of the daemon, an autonomous agent running as the exact same OS user without process isolation could potentially inspect process memory (`/proc/<pid>/environ` on Linux, Win32 debugging APIs on Windows) or read local unencrypted key files. Cryptographically binding non-repudiation in an adversarial environment requires running the blackbox daemon under an isolated service user account, using an OS keychain (DPAPI / SecretService), or using remote/hardware signing.
+- **Local File Deletion:** If an agent runs with full write access to the user's home directory, it can delete the `.agentblackbox/` database or checkpoint files entirely. AgentBlackBox notes when checkpoints are missing (`truncation check not performed, no checkpoint`). Remote replication or append-only write storage is planned for enterprise deployments.
 - **Heuristic Redaction is Best-Effort:** Regex + Shannon entropy detects high-entropy and standard provider tokens. Custom split tokens, base64-obfuscated keys, or non-standard formats are not guaranteed to be caught.
 - **Attribution Depth:** Claude Code is monitored via structured `.claude/settings.local.json` `PreToolUse` hooks; generic terminal tools are monitored via `abb run` wrappers. IDE extensions without hook interfaces (Cursor, Cline) are currently tracked via time-correlated filesystem and git events.
 

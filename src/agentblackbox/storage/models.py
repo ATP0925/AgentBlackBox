@@ -33,6 +33,14 @@ def _hash_payload(payload: dict) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+def _compute_session_meta_mac(
+    session_id: str, is_keyed: int, v1_max_seq: int, hmac_key: bytes
+) -> str:
+    """Compute HMAC-SHA256 over critical session flags to prevent offline tampering in SQLite."""
+    payload = f"{session_id}:{int(is_keyed)}:{int(v1_max_seq)}"
+    return hmac.new(hmac_key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
 def _compute_event_hash_v1(event: "Event") -> str:
     """Compute legacy v1 SHA256 hash without version field or tags for backward compatibility."""
     canonical = {
@@ -220,6 +228,7 @@ class ChainVerificationResult:
         total_events: Number of events checked.
         broken_at_seq: Sequence number where verification first failed, if any.
         reason: Human-readable explanation when invalid.
+        notes: Informational notes (e.g., checkpoint verification details).
     """
 
     session_id: str
@@ -227,6 +236,7 @@ class ChainVerificationResult:
     total_events: int = 0
     broken_at_seq: Optional[int] = None
     reason: Optional[str] = None
+    notes: Optional[str] = None
 
 
 @dataclass
@@ -243,6 +253,9 @@ class Session:
         status: Current state: recording | stopped.
         total_events: Count of events in this session.
         risk_score: Aggregate risk score.
+        v1_max_seq: Cutoff sequence number for legacy v1 hash migration.
+        is_keyed: Whether this session was recorded with an HMAC key.
+        meta_mac: HMAC digest over session critical flags (session_id, is_keyed, v1_max_seq).
     """
 
     workspace_path: str
@@ -256,6 +269,7 @@ class Session:
     risk_score: float = 0.0
     v1_max_seq: int = 0
     is_keyed: bool = False
+    meta_mac: Optional[str] = None
 
     def stop(self) -> None:
         """Mark session as stopped."""

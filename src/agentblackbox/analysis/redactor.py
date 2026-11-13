@@ -11,14 +11,33 @@ from agentblackbox.analysis.secret_detector import (
     _shannon_entropy,
 )
 
-def is_sensitive_key_name(key: str) -> bool:
+def _is_path_like_value(val: Optional[str]) -> bool:
+    """Return True if string looks like a filesystem path or working directory."""
+    if not isinstance(val, str) or not val.strip():
+        return False
+    v = val.strip()
+    if v.startswith(("/", "\\", "~")):
+        return True
+    if re.match(r"^[A-Za-z]:[/\\]", v):
+        return True
+    if ("/" in v or "\\" in v) and "://" not in v:
+        return True
+    return False
+
+
+def is_sensitive_key_name(key: str, value: Optional[str] = None) -> bool:
     """Robust tokenized classifier for sensitive payload/dictionary keys.
 
     Splits camelCase, snake_case, and kebab-case into tokens and checks for
     credentials, tokens, keys, and passwords. Handles run-together terms like
-    'dbpassword', 'accesstoken', 'refreshtoken', 'pwd', and multi-word names
-    like 'aws_secret_access_key' and 'client_secret_value' without false
-    positives on 'author', 'credit', or LLM token usage metrics.
+    'dbpassword', 'accesstoken', 'refreshtoken', and multi-word names like
+    'aws_secret_access_key' and 'client_secret_value'.
+
+    Exempts:
+    - POSIX / Windows working directory paths (e.g. key PWD / pwd when value is a path)
+    - Safe non-secret terms (author, credit, secret_santa, password_length, password_policy, tokenizer)
+    - LLM token usage counters (input_tokens, output_tokens, completion_tokens,
+      cache_read_input_tokens, total_tokens, etc.)
     """
     if not isinstance(key, str) or not key:
         return False
@@ -26,14 +45,28 @@ def is_sensitive_key_name(key: str) -> bool:
     k_lower = key.lower()
 
     # 1. Exact safe overrides (Never redact)
-    if k_lower in {"author", "authors", "authority", "credit", "credits"}:
+    if k_lower in {
+        "author", "authors", "authority", "credit", "credits",
+        "secret_santa", "password_length", "password_policy", "password_rules",
+        "tokenizer", "tokenizer_name", "tokenizer_type",
+    }:
         return False
 
-    # Check LLM token usage metrics
-    if any(m in k_lower for m in ["token_count", "token_usage", "token_limit", "token_cost", "tokencount", "tokenusage", "tokenlimit"]):
+    # Check LLM token usage metrics & counters
+    if any(m in k_lower for m in [
+        "token_count", "token_usage", "token_limit", "token_cost", "tokencount", "tokenusage", "tokenlimit",
+        "input_token", "output_token", "prompt_token", "completion_token", "total_token",
+        "cache_read_input_token", "cache_creation_input_token",
+    ]):
         return False
-    if any(k_lower.startswith(m) for m in ["max_token", "maxtoken", "prompt_token", "prompttoken", "completion_token", "completiontoken", "total_token", "totaltoken", "input_token", "output_token"]):
-        return False
+
+    # PWD / working directory check:
+    if k_lower == "pwd":
+        if _is_path_like_value(value):
+            return False
+        if key == "PWD" and value is None:
+            return False
+        return True
 
     # 2. Tokenize on camelCase, underscores, hyphens, dots
     decamel = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key)
@@ -41,10 +74,15 @@ def is_sensitive_key_name(key: str) -> bool:
     pure = re.sub(r"[^a-zA-Z0-9]", "", k_lower)
 
     # 3. Check for password / pwd indicators anywhere
-    if any(t in {"password", "passwd", "passphrase", "pwd"} for t in tokens):
-        return True
-    if any(pure.endswith(p) for p in ["password", "passwd", "passphrase", "pwd"]):
-        return True
+    if _is_path_like_value(value):
+        # Value is clearly a filesystem path. Exempt PWD/pwd paths from password classification.
+        if any(t in {"password", "passwd", "passphrase"} for t in tokens):
+            return True
+    else:
+        if any(t in {"password", "passwd", "passphrase", "pwd"} for t in tokens):
+            return True
+        if any(pure.endswith(p) for p in ["password", "passwd", "passphrase", "pwd"]):
+            return True
 
     # 4. Check for secret indicators (client_secret, secret_key, client_secret_value)
     if "secret" in tokens or "secrets" in tokens or "clientsecret" in pure:
@@ -167,7 +205,7 @@ def redact_payload(obj: Any, source: str = "payload") -> Tuple[Any, List[SecretM
     if isinstance(obj, dict):
         clean_dict = {}
         for k, v in obj.items():
-            if isinstance(v, str) and is_sensitive_key_name(str(k)):
+            if isinstance(v, str) and is_sensitive_key_name(str(k), v):
                 if not v.startswith("[REDACTED:"):
                     clean_dict[k] = f"[REDACTED:{k.lower()}]"
                     all_matches.append(SecretMatch(
