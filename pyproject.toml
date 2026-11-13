@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "abb-recorder"
-version = "0.2.0a5"
+version = "0.3.0"
 description = "The flight recorder for autonomous AI agents"
 readme = "README.md"
 license = "MIT"
@@ -31,6 +31,7 @@ dependencies = [
     "gitpython>=3.1.0",
     "pydantic>=2.7.0",
     "structlog>=24.0.0",
+    "keyring>=25.0.0",
 ]
 
 [project.optional-dependencies]

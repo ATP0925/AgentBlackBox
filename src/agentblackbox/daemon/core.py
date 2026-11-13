@@ -15,6 +15,7 @@ from typing import Optional
 
 import structlog
 
+from agentblackbox.analysis.key_provider import KeyProvider, ENV_HMAC_KEY
 from agentblackbox.analysis.pattern_matcher import classify_event
 from agentblackbox.analysis.risk_scorer import score_event
 from agentblackbox.daemon.config import BlackBoxConfig
@@ -31,6 +32,14 @@ from agentblackbox.watchers.git_observer import (
 logger = structlog.get_logger()
 
 _STILL_ACTIVE = 259
+
+
+def build_sanitized_child_env() -> dict[str, str]:
+    """Return environment dictionary for child agent processes with secrets stripped."""
+    env = dict(os.environ)
+    env.pop(ENV_HMAC_KEY, None)
+    env.pop("ABB_API_TOKEN", None)
+    return env
 
 
 @dataclass

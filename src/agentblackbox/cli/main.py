@@ -1,12 +1,14 @@
 """CLI entry point for AgentBlackBox (`abb` command)."""
 
+import json
 import os
 import secrets
 import shlex
 import subprocess
 import sys
+from dataclasses import asdict
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import typer
 import uvicorn
@@ -14,6 +16,7 @@ from rich.console import Console
 from rich.table import Table
 
 from agentblackbox import __version__
+from agentblackbox.collectors.ide_hooks import UniversalIDECollector
 from agentblackbox.daemon.config import BlackBoxConfig
 from agentblackbox.daemon.core import (
     get_daemon_state,
@@ -21,7 +24,7 @@ from agentblackbox.daemon.core import (
     stop_background_daemon,
 )
 from agentblackbox.storage.event_store import EventStore
-from agentblackbox.storage.models import Session
+from agentblackbox.storage.models import Event, EventType, Session
 from agentblackbox.watchers.agent_hooks import install_claude_hook
 from agentblackbox.watchers.terminal import run_recorded_command
 
@@ -209,6 +212,82 @@ def hook_install(
         raise typer.Exit(1)
     path = install_claude_hook(ws)
     console.print(f"[bold green]✅ Installed Claude Code hook[/] at [cyan]{path}[/]")
+
+
+@app.command("hook-ingest")
+def hook_ingest(
+    log_file: Optional[Path] = typer.Argument(None, help="Path to JSON/JSONL IDE log file"),
+    source: str = typer.Option("auto", "--source", "-s", help="Source agent (auto|claude_code|cursor|cline|antigravity)"),
+    session_id: Optional[str] = typer.Option(None, "--session", help="Session ID to record events into"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", "-w"),
+) -> None:
+    """Ingest and normalize tool events from Cursor, Cline, Claude Code, or Antigravity IDE."""
+    ws = workspace or Path.cwd()
+    store = _get_store(ws)
+
+    target_sid = session_id
+    if not target_sid:
+        active = store.get_active_session()
+        if active:
+            target_sid = active.id
+        else:
+            sess = Session(workspace_path=str(ws), name="ide-hooks", agent_hint=source)
+            store.create_session(sess)
+            target_sid = sess.id
+
+    raw_events: list[dict[str, Any]] = []
+    if log_file and log_file.exists():
+        raw_events = UniversalIDECollector.ingest_ide_log_file(log_file, source_hint=source)
+    else:
+        # Read from stdin if available
+        if not sys.stdin.isatty():
+            content = sys.stdin.read().strip()
+            if content:
+                try:
+                    if content.startswith("["):
+                        items = json.loads(content)
+                        for item in items:
+                            if isinstance(item, dict):
+                                raw_events.append(asdict(UniversalIDECollector.parse_hook_payload(item, source_hint=source)))
+                    elif content.startswith("{"):
+                        item = json.loads(content)
+                        raw_events.append(asdict(UniversalIDECollector.parse_hook_payload(item, source_hint=source)))
+                    else:
+                        for line in content.splitlines():
+                            line = line.strip()
+                            if line:
+                                item = json.loads(line)
+                                raw_events.append(asdict(UniversalIDECollector.parse_hook_payload(item, source_hint=source)))
+                except Exception as e:
+                    console.print(f"[red]Failed to parse stdin: {e}[/]")
+                    raise typer.Exit(1)
+
+    if not raw_events:
+        console.print("[yellow]No events parsed to ingest.[/]")
+        return
+
+    ingested = 0
+    for rev in raw_events:
+        ev_type = (
+            EventType.CMD_EXECUTE if rev.get("event_type") == "terminal_cmd"
+            else (EventType.FILE_MODIFY if rev.get("event_type") in ("file_edit", "mcp_call")
+                  else EventType.API_REQUEST)
+        )
+        ev = Event(
+            session_id=target_sid,
+            event_type=ev_type,
+            source_path=rev.get("target_resource"),
+            agent_id=rev.get("agent_source"),
+            payload={
+                "tool_name": rev.get("tool_name"),
+                "arguments": rev.get("raw_arguments"),
+            },
+            tags=[f"agent:{rev.get('agent_source')}", f"tool:{rev.get('tool_name')}"],
+        )
+        store.insert_event(ev)
+        ingested += 1
+
+    console.print(f"[bold green]✅ Ingested {ingested} normalized events[/] into session [cyan]{target_sid}[/]")
 
 
 @app.command()

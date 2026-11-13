@@ -575,11 +575,21 @@ class EventStore:
             "checkpoint_time": _utcnow(),
             "event_time": ts,
             "signature": sig,
+            "seq": last_seq,
+            "tip_hash": head_hash,
+            "mac": sig or "",
         }
         cp_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
         try:
             cp_file.chmod(0o600)
         except (OSError, NotImplementedError):
+            pass
+
+        try:
+            from agentblackbox.storage.tamper_guard import TamperGuard
+            guard = TamperGuard(cp_file.parent, session_id=session_id)
+            guard.replicate_tip_checkpoint(data)
+        except Exception:
             pass
         return cp_file
 

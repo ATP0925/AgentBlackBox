@@ -86,6 +86,7 @@ abb report <session_id> --format html
 | `abb status` | Show live daemon status, PID, and event count |
 | `abb run -- <cmd>` | Execute a command with full output, redaction, and attribution |
 | `abb hook-install` | Install Claude Code `PreToolUse` attribution hook |
+| `abb hook-ingest [file]` | Ingest & normalize events from Cursor, Cline, Claude, Antigravity (`--source`) |
 | `abb verify <session_id>` | Verify tamper-evident event hash chain (`--checkpoint`, `--require-keyed`, `--require-checkpoint`) |
 | `abb export-checkpoint <session_id>` | Export HMAC-signed head tip checkpoint JSON |
 | `abb sessions` | List recorded sessions |
@@ -130,28 +131,26 @@ ABB_API_TOKEN="<your-token>" uvicorn agentblackbox.api.main:app --host 127.0.0.1
 python -m pytest tests/ -v --tb=short
 ```
 
-**141 tests passing** across tokenized key redactor, exact `pwd`/`PWD` path exemption, cross-install salt divergence, dynamic random salt HMAC fingerprinting with Windows `icacls` / POSIX `0600` ACLs, risk scoring, hash chain watermark downgrade protection, default-on HMAC enforcement, domain-separated subkeys (`abb-event-mac-v1`, `abb-session-meta-mac-v1`, `abb-checkpoint-mac-v1`), session metadata MAC (`meta_mac`), periodic and signed tip checkpointing (`--require-checkpoint`), filesystem debounce coalescing, blob store, git observer & hooks, terminal recorder, agent hooks, background daemon, timeline, blame, API auth, and FastAPI routes.
+**146 tests passing** across OS Keychain integration & process env scrubbing (`keyring`, DPAPI/SecretService), `TamperGuard` out-of-tree shadow checkpoint mirroring & rollback detection, multi-pass Base64/Hex/URL & split-token secret scanner, Universal IDE Hook Collector (Claude Code, Cursor Composer, Cline, Google Antigravity), tokenized key redactor, exact `pwd`/`PWD` path exemption, cross-install salt divergence, dynamic random salt HMAC fingerprinting with Windows `icacls` / POSIX `0600` ACLs, risk scoring, hash chain watermark downgrade protection, default-on HMAC enforcement, domain-separated subkeys (`abb-event-mac-v1`, `abb-session-meta-mac-v1`, `abb-checkpoint-mac-v1`), session metadata MAC (`meta_mac`), periodic and signed tip checkpointing (`--require-checkpoint`), filesystem debounce coalescing, blob store, git observer & hooks, terminal recorder, background daemon, timeline, blame, API auth, and FastAPI routes.
 
 ---
 
-## Threat Model & Security Boundaries
+## Threat Model & Security Boundaries (v0.3.0)
 
-AgentBlackBox is an **observability & forensic flight recorder** designed to capture what autonomous coding agents do on a developer machine. Like user-space audit daemons, it operates under explicit security boundaries:
+AgentBlackBox is an **observability & forensic flight recorder** designed to capture what autonomous coding agents do on a developer machine. In v0.3.0, all four core architectural boundaries are hardened:
 
 ### What AgentBlackBox Solves (In Scope)
-- **Accidental & Runaway Damage:** Catches accidental recursive file deletions, unauthorized `.env` modifications, runaway git resets, and mass edits.
-- **Accidental Secret Leaks (Best-Effort):** 14 regex provider signatures + Shannon entropy redact sensitive tokens (`[REDACTED:<type>]`) before payloads or file snapshots are written to SQLite or blob disk. Working directory paths (`PWD`, exact `pwd` with path values) and LLM token usage counters are explicitly exempt from redaction, while any password key (e.g. `password = "/home/x/secret"`, `db_password = "C:\x"`) or non-path `pwd` (`pwd = "hunter2"`) is strictly redacted.
-- **Secret Salt Hygiene:** HMAC secret fingerprints use a dynamic 256-bit random salt stored at `~/.agentblackbox/.secret_salt` with POSIX `0600` permissions and Windows `icacls` user-only read/write access (can be overridden via `ABB_SECRET_SALT`). Zero hardcoded default salt strings exist in source code.
-- **Forensic Reconstruction:** Provides full timeline replay, reverse-chronological file blame, and verifiable event sequences for post-mortems.
+- **Same-User Key Protection & Process Isolation:** `KeyProvider` stores master HMAC keys directly inside the OS Keychain (Windows DPAPI, Linux SecretService, macOS Keychain). When initialized, `ABB_HMAC_KEY` is scrubbed from process memory (`os.environ`), and child processes spawned via `abb run` have secrets explicitly stripped via `build_sanitized_child_env()`. Subkeys are derived per-domain using RFC 5869 HKDF-SHA256 (`abb-event-mac-v1`, `abb-session-meta-mac-v1`, `abb-checkpoint-mac-v1`).
+- **Tamper-Evident Shadow Mirroring & Deletion Recovery:** `TamperGuard` writes signed `.tip` checkpoints to both the workspace `.agentblackbox/checkpoints/` and an out-of-tree protected user directory (`%LOCALAPPDATA%\agentblackbox\shadow_mirrors` on Windows or `~/.local/share/agentblackbox/shadow_mirrors` on Linux/macOS). It detects sequence rollbacks and MAC tampering, automatically restores deleted workspace checkpoints from shadow storage, applies read-only OS guards, and optionally replicates checkpoints via HTTP/HTTPS webhook (`ABB_CHECKPOINT_WEBHOOK_URL`).
+- **Multi-Pass Secret Scanner & Split-Token Reassembly:** Catches direct secrets as well as Base64-encoded, Hex-encoded, URL-encoded, and adjacent split string literals (e.g. `'sk-ant-' + 'api03-...'`). Redaction operates before disk write, preventing secret leakage into SQLite or blob stores. Working directory paths (`PWD`, exact `pwd` with path values) and LLM token usage counters remain cleanly exempt.
+- **Universal IDE Hook & Log Collector:** `UniversalIDECollector` parses and canonicalizes tool invocations from Claude Code (`PreToolUse`/`PostToolUse`), Cursor IDE Composer & MCP tools, Cline VS Code tasks, and Google Antigravity IDE events into unified `NormalizedAgentEvent` records, ingestible via `abb hook-ingest`.
 - **Chain Integrity & Attribution Protection:** A canonical v2 JSON hash covers sequence, predecessor, timestamp, event type, payload hash, source path, attribution fields (`agent_id`, `pid`, `parent_event_id`), blob references, severity, risk score, and tags. When configured with `ABB_HMAC_KEY`, HMAC-SHA256 signatures protect event hashes and session metadata (`session_meta_mac` covers `is_keyed` and migration cutoffs), detecting direct SQLite tampering. Verification strictly enforces keyed events across all v2 rows by default when a key is present.
-- **Domain-Separated Subkeys:** Uses HKDF/HMAC subkey derivation (`abb-event-mac-v1`, `abb-session-meta-mac-v1`, `abb-checkpoint-mac-v1`) to prevent cross-protocol signature substitution.
 - **Tail-Truncation Defense & Crash Resilience:** External signed tip checkpoints are exported automatically every 50 events (`checkpoint_interval`) and on `abb stop`. Even if an agent process is forcibly killed or crashes, events up to the latest periodic checkpoint remain verifiable. `--require-checkpoint` flags missing checkpoints as verification failures.
 
 ### Explicit Limitations & Out-of-Scope (Roadmap)
-- **Same-User Process Memory & Key Access:** When `ABB_HMAC_KEY` is configured in the environment of the daemon, an autonomous agent running as the exact same OS user without process isolation could potentially inspect process memory (`/proc/<pid>/environ` on Linux, Win32 debugging APIs on Windows) or read local unencrypted key files. Cryptographically binding non-repudiation in an adversarial environment requires running the blackbox daemon under an isolated service user account, using an OS keychain (DPAPI / SecretService), or using remote/hardware signing.
-- **Local File Deletion:** If an agent runs with full write access to the user's home directory, it can delete the `.agentblackbox/` database or checkpoint files entirely. AgentBlackBox notes when checkpoints are missing (`truncation check not performed, no checkpoint`), and strict verification policy `--require-checkpoint` treats missing checkpoint files as verification failures. Remote replication or append-only write storage is planned for enterprise deployments.
-- **Heuristic Redaction is Best-Effort:** Regex + Shannon entropy detects high-entropy and standard provider tokens. Custom split tokens, base64-obfuscated keys, or non-standard formats are not guaranteed to be caught.
-- **Attribution Depth:** Claude Code is monitored via structured `.claude/settings.local.json` `PreToolUse` hooks; generic terminal tools are monitored via `abb run` wrappers. IDE extensions without hook interfaces (Cursor, Cline) are currently tracked via time-correlated filesystem and git events.
+- **Root / Administrator Compromise:** If an attacker or agent gains elevated OS administrator/root privileges, kernel-level drivers or OS memory dump facilities can bypass user-space security controls.
+- **Physical Machine Access:** Encrypted hardware storage / TPM binding is planned for enterprise compliance extensions.
+- **Heuristic Redaction is Best-Effort:** Multi-pass Base64/Hex/URL decoding and split-token normalization catches common obfuscations. Custom proprietary ciphers or polymorphic payloads require behavioral analysis.
 
 ---
 

@@ -175,6 +175,25 @@ def redact_text(text: str, source: str = "payload") -> Tuple[str, List[SecretMat
         return m.group(0)
 
     redacted = _ASSIGN_PATTERN.sub(_replace_entropy, redacted)
+
+    # Multi-pass decoding (Base64, Hex, URL) and split-token reassembly
+    try:
+        from agentblackbox.analysis.secret_scanner import redact_secrets as scan_secrets
+        scanned_text, scanned_types = scan_secrets(redacted)
+        if scanned_text != redacted:
+            for st in scanned_types:
+                matches.append(SecretMatch(
+                    secret_type=st,
+                    matched_text=f"[REDACTED:{st}]",
+                    confidence=0.95,
+                    source=source,
+                    length=0,
+                    fingerprint="",
+                ))
+            redacted = scanned_text
+    except Exception:
+        pass
+
     return redacted, matches
 
 

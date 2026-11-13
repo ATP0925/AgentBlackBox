@@ -55,3 +55,18 @@ def test_cli_export_checkpoint_and_verify(tmp_path: Path) -> None:
     assert res_missing.exit_code == 1
     assert "BROKEN" in res_missing.stdout or "checkpoint required" in res_missing.stdout.lower()
 
+    # Test hook-ingest CLI with JSON log file
+    log_file = tmp_path / "cursor_log.json"
+    log_file.write_text(
+        json.dumps([
+            {"composerId": "cmp-test", "mcpServer": "filesystem", "toolName": "write_file", "parameters": {"path": "test.py"}}
+        ]),
+        encoding="utf-8",
+    )
+    res_ingest = runner.invoke(
+        app,
+        ["hook-ingest", str(log_file), "--source", "cursor", "--session", sess.id, "-w", str(tmp_path)],
+    )
+    assert res_ingest.exit_code == 0
+    assert "Ingested 1 normalized events" in res_ingest.stdout
+

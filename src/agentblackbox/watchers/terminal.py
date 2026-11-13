@@ -90,7 +90,8 @@ def run_recorded_command(
             description=f"High-risk command executed (risk {exec_event.risk_score})",
         ))
 
-    child_env = os.environ.copy()
+    from agentblackbox.daemon.core import build_sanitized_child_env
+    child_env = build_sanitized_child_env()
     child_env["ABB_SESSION_ID"] = session_id
     if exec_event.id is not None:
         child_env["ABB_PARENT_EVENT_ID"] = str(exec_event.id)
