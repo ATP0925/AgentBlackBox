@@ -67,6 +67,23 @@ def test_bug_analyzer() -> None:
     assert "BUG-006" in rule_ids  # Unchecked regex group
 
 
+def test_guarded_regex_group_not_flagged() -> None:
+    code = """
+import re
+def get_item(text):
+    m = re.search(r"\\d+", text)
+    if m:
+        return m.group(0)
+    return ""
+"""
+    graph = DependencyGraph()
+    graph.index_source("src/safe_regex.py", code)
+    code_ctx = graph.build_code_context(["src/safe_regex.py"])
+    analyzer = BugAnalyzer()
+    findings = analyzer.analyze(code_ctx)
+    assert not any(f.rule_id == "BUG-006" for f in findings)
+
+
 def test_quality_analyzer() -> None:
     graph = DependencyGraph()
     graph.index_source("src/quality.py", CODE_WITH_QUALITY_ISSUES)
@@ -99,5 +116,19 @@ def test_duplication_analyzer() -> None:
     findings = analyzer.analyze(code_ctx)
 
     assert len(findings) >= 1
-    assert any(f.rule_id == "DUPL-001" for f in findings)
+    assert any(f.rule_id in ("DUP-001", "DUPL-001") for f in findings)
+
+
+def test_duplication_analyzer_on_ast_hashing() -> None:
+    graph = DependencyGraph()
+    graph.index_source("src/file1.py", CODE_WITH_DUPLICATION_1)
+    graph.index_source("src/file2.py", CODE_WITH_DUPLICATION_2)
+    code_ctx = graph.build_code_context(["src/file1.py", "src/file2.py"])
+
+    analyzer = DuplicationAnalyzer()
+    findings = analyzer.analyze(code_ctx)
+
+    assert len(findings) >= 1
+    assert any(f.rule_id == "DUP-001" for f in findings)
+    assert any("file1.py" in (f.file_path + f.message) and "file2.py" in (f.file_path + f.message) for f in findings)
 

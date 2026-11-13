@@ -1,5 +1,6 @@
 """Tests for EventStore — SQLite persistence layer."""
 
+from pathlib import Path
 import sqlite3
 import pytest
 from agentblackbox.storage.event_store import EventStore
@@ -177,4 +178,36 @@ class TestAlerts:
         unacked = store.get_alerts(session_id=sample_session.id, unacked_only=True)
         assert len(unacked) == 1
         assert unacked[0].alert_type == "secret_leak"
+
+    def test_close_multithread_cleanup(self, tmp_path: Path) -> None:
+        """Verify EventStore.close() closes all thread connections and rejects post-close access."""
+        import threading
+        import pytest
+
+        db_file = tmp_path / "test_multithread_close.db"
+        store = EventStore(db_file)
+
+        # Main thread connection
+        conn_main = store._get_thread_conn()
+        assert conn_main in store._all_conns
+
+        # Worker thread connection
+        def worker() -> None:
+            c = store._get_thread_conn()
+            assert c in store._all_conns
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join()
+
+        assert len(store._all_conns) >= 2
+
+        # Close should close all handles and clear set
+        store.close()
+        assert len(store._all_conns) == 0
+        assert store._closed is True
+
+        # Subsequent access must raise RuntimeError
+        with pytest.raises(RuntimeError, match="Cannot access EventStore after close"):
+            store._get_thread_conn()
 

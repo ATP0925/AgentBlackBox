@@ -78,7 +78,7 @@ class GeminiAIProvider(BaseAIProvider):
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gemini-1.5-flash",
+        model: str = "gemini-2.5-flash",
         timeout: float = 30.0,
     ):
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
@@ -94,6 +94,8 @@ class GeminiAIProvider(BaseAIProvider):
         user_prompt: str,
         default_file: Optional[str] = None,
     ) -> Tuple[str, List[Finding]]:
+        import time
+
         url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
             f"{self.model}:generateContent?key={self.api_key}"
@@ -121,18 +123,29 @@ class GeminiAIProvider(BaseAIProvider):
             method="POST",
         )
 
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
-                text = (
-                    result.get("candidates", [{}])[0]
-                    .get("content", {})
-                    .get("parts", [{}])[0]
-                    .get("text", "")
-                )
-                return parse_ai_findings(text, default_file=default_file)
-        except urllib.error.URLError as e:
-            raise AIProviderError(f"Gemini API request failed: {e}") from e
+        max_retries = 3
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    result = json.loads(resp.read().decode("utf-8"))
+                    text = (
+                        result.get("candidates", [{}])[0]
+                        .get("content", {})
+                        .get("parts", [{}])[0]
+                        .get("text", "")
+                    )
+                    return parse_ai_findings(text, default_file=default_file)
+            except urllib.error.HTTPError as e:
+                last_error = e
+                if e.code in (429, 500, 503) and attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                raise AIProviderError(f"Gemini API request failed: {e}") from e
+            except urllib.error.URLError as e:
+                raise AIProviderError(f"Gemini API request failed: {e}") from e
+
+        raise AIProviderError(f"Gemini API request failed after {max_retries} attempts: {last_error}")
 
 
 class OpenAICompatibleProvider(BaseAIProvider):
@@ -208,7 +221,7 @@ def get_ai_provider(
         try:
             return GeminiAIProvider(
                 api_key=api_key,
-                model=model or "gemini-1.5-flash",
+                model=model or "gemini-2.5-flash",
             )
         except AIProviderError:
             return OfflineMockAIProvider()

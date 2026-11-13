@@ -58,5 +58,17 @@ class TestRiskScoring:
     def test_normal_git_commit_low_risk(self) -> None:
         event = Event(session_id="s", event_type=EventType.GIT_COMMIT)
         scored = score_event(event)
-        assert scored.risk_score < 3.0
+        assert scored.risk_score <= 2.0
+
+    def test_score_command_tokens_quoted_operators(self) -> None:
+        from agentblackbox.analysis.risk_scorer import score_command_tokens
+        # Quoted rm -rf inside benign echo should not trigger destructive_delete:rm_rf
+        score, reasons = score_command_tokens('echo "a && rm -rf /"')
+        assert "destructive_delete:rm_rf" not in reasons
+        assert score == 1.0
+
+        # Real unquoted pipeline SHOULD trigger destructive_delete:rm_rf
+        score, reasons = score_command_tokens('echo "hello" && rm -rf /')
+        assert "destructive_delete:rm_rf" in reasons
+        assert score >= 8.0
 

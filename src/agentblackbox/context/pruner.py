@@ -76,8 +76,15 @@ class ContextPruner:
                 sections.append(candidate)
                 budget -= _estimate_tokens(candidate)
             else:
-                # File too large, provide line-numbered extract or stubs
-                sliced = file_header + source_content[: budget * 2] + "\n# ... remaining lines truncated ...\n"
+                # File too large, prune strictly on complete line / symbol boundaries
+                lines = source_content.splitlines()
+                accumulated_lines: List[str] = []
+                for line in lines:
+                    if _estimate_tokens("\n".join(accumulated_lines + [line])) > budget * 0.6:
+                        accumulated_lines.append("# ... remaining lines truncated on line boundary ...")
+                        break
+                    accumulated_lines.append(line)
+                sliced = file_header + "\n".join(accumulated_lines) + "\n"
                 sections.append(sliced)
                 budget -= _estimate_tokens(sliced)
 

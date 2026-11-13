@@ -4,64 +4,86 @@ import re
 import shlex
 from agentblackbox.storage.models import Event, EventType, Severity
 
-_SHELL_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;|\|)\s*")
+_SHELL_OPERATORS = {";", "|", "||", "&&", "&"}
 _BENIGN_PRINT_VERBS = {"echo", "printf", "grep", "rg", "cat", "head", "tail"}
 
 
+def _split_shell_pipeline(command_str: str) -> tuple[list[list[str]], bool]:
+    # Tokenize shell command respecting quotes while separating pipeline operators.
+    lexer = shlex.shlex(command_str, posix=True, punctuation_chars=";&|")
+    lexer.whitespace_split = True
+    subcommands: list[list[str]] = []
+    current: list[str] = []
+    has_pipe = False
+    try:
+        for tok in lexer:
+            if tok in _SHELL_OPERATORS:
+                if "|" in tok:
+                    has_pipe = True
+                if current:
+                    subcommands.append(current)
+                    current = []
+            else:
+                current.append(tok)
+    except ValueError:
+        # Unclosed quote fallback: treat entire string as single literal command
+        return [command_str.split()], ("|" in command_str)
+    if current:
+        subcommands.append(current)
+    return subcommands, has_pipe
+
+
 def score_command_tokens(command_str: str) -> tuple[float, list[str]]:
-    """Parse shell pipelines via shlex to score real destructive invocations accurately."""
     if not command_str or not command_str.strip():
         return 0.0, []
+
     reasons: list[str] = []
     max_score = 1.0
-    subcommands = _SHELL_SPLIT_RE.split(command_str.strip())
-    for sub in subcommands:
-        if not sub:
-            continue
-        try:
-            tokens = shlex.split(sub, posix=True)
-        except ValueError:
-            tokens = sub.split()
-        if not tokens:
-            continue
-        # Strip leading env assignments (FOO=bar cmd ...) and sudo
+    subcommands, has_pipe = _split_shell_pipeline(command_str.strip())
+
+    saw_network_fetch = False
+    for tokens in subcommands:
         idx = 0
         while idx < len(tokens) and ("=" in tokens[idx] or tokens[idx] == "sudo"):
             if tokens[idx] == "sudo":
                 max_score = max(max_score, 6.0)
-                reasons.append("privilege_escalation:sudo")
+                if "privilege_escalation:sudo" not in reasons:
+                    reasons.append("privilege_escalation:sudo")
             idx += 1
         if idx >= len(tokens):
             continue
+
         verb = tokens[idx].rsplit("/", 1)[-1]
         args = tokens[idx + 1 :]
         flags = {a for a in args if a.startswith("-")}
-        # Ignore arguments passed to echo/grep/printf so strings don't false-alarm
+
         if verb in _BENIGN_PRINT_VERBS:
             continue
+
+        if verb in ("curl", "wget"):
+            saw_network_fetch = True
+        elif saw_network_fetch and has_pipe and verb in ("sh", "bash", "zsh", "python", "python3"):
+            max_score = max(max_score, 9.5)
+            reasons.append("remote_code_execution:pipe_to_shell")
+
         if verb == "rm":
-            has_recursive = any(f in flags for f in ("-r", "-R", "--recursive", "-rf", "-fr"))
+            has_rec = any(f in flags for f in ("-r", "-R", "--recursive", "-rf", "-fr"))
             has_force = any(f in flags for f in ("-f", "--force", "-rf", "-fr"))
             targets_root = any(a in ("/", "/*", "~", "~/*") for a in args)
-            if targets_root or (has_recursive and has_force):
+            if targets_root or (has_rec and has_force):
                 max_score = max(max_score, 9.5 if targets_root else 8.0)
                 reasons.append("destructive_delete:rm_rf")
         elif verb == "git" and args:
-            subverb = args[0]
-            if subverb == "push" and any(f in flags for f in ("-f", "--force", "--force-with-lease")):
+            if args[0] == "push" and any(f in flags for f in ("-f", "--force", "--force-with-lease")):
                 max_score = max(max_score, 8.5)
                 reasons.append("destructive_git:force_push")
-            elif subverb == "reset" and "--hard" in flags:
+            elif args[0] == "reset" and "--hard" in flags:
                 max_score = max(max_score, 7.0)
                 reasons.append("destructive_git:reset_hard")
         elif verb == "chmod" and any("777" in a for a in args):
             max_score = max(max_score, 7.5)
             reasons.append("insecure_permissions:chmod_777")
-        elif verb in ("curl", "wget") and "|" in command_str and any(
-            sh in command_str for sh in ("| sh", "| bash", "| zsh")
-        ):
-            max_score = max(max_score, 9.5)
-            reasons.append("remote_code_execution:pipe_to_shell")
+
     return min(10.0, round(max_score, 2)), reasons
 
 

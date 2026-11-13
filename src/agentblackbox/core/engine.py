@@ -6,6 +6,8 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
+import structlog
+
 from agentblackbox.analyzers.base import BaseAnalyzer
 from agentblackbox.analyzers.bugs import BugAnalyzer
 from agentblackbox.analyzers.duplication import DuplicationAnalyzer
@@ -29,6 +31,8 @@ from agentblackbox.models.report import ReviewReport
 from agentblackbox.scanners.ast_scanner import ASTScanner
 from agentblackbox.scanners.base import BaseScanner
 from agentblackbox.scanners.pattern_scanner import PatternScanner
+
+logger = structlog.get_logger(__name__)
 
 
 class ReviewEngine:
@@ -144,13 +148,26 @@ class ReviewEngine:
             if not f_ctx.raw_source:
                 continue
             for scanner in self.scanners:
-                scanner_findings = scanner.scan_source(f_ctx.raw_source, file_path)
-                all_findings.extend(scanner_findings)
+                try:
+                    all_findings.extend(scanner.scan_source(f_ctx.raw_source, file_path))
+                except Exception as exc:
+                    logger.warning(
+                        "scanner_execution_failed",
+                        scanner=getattr(scanner, "name", str(scanner)),
+                        file=file_path,
+                        error=str(exc),
+                    )
 
         # 2. Run domain analyzers
         for analyzer in self.analyzers:
-            analyzer_findings = analyzer.analyze(code_ctx, target_diff=git_diff)
-            all_findings.extend(analyzer_findings)
+            try:
+                all_findings.extend(analyzer.analyze(code_ctx, target_diff=git_diff))
+            except Exception as exc:
+                logger.warning(
+                    "analyzer_execution_failed",
+                    analyzer=getattr(analyzer, "name", str(analyzer)),
+                    error=str(exc),
+                )
 
         # 3. Attribute findings to diff hunks
         for f in all_findings:
@@ -244,11 +261,26 @@ class ReviewEngine:
             if not f_ctx.raw_source:
                 continue
             for scanner in self.scanners:
-                all_findings.extend(scanner.scan_source(f_ctx.raw_source, file_path))
+                try:
+                    all_findings.extend(scanner.scan_source(f_ctx.raw_source, file_path))
+                except Exception as exc:
+                    logger.warning(
+                        "scanner_execution_failed",
+                        scanner=getattr(scanner, "name", str(scanner)),
+                        file=file_path,
+                        error=str(exc),
+                    )
 
         # 2. Analyzers
         for analyzer in self.analyzers:
-            all_findings.extend(analyzer.analyze(code_ctx))
+            try:
+                all_findings.extend(analyzer.analyze(code_ctx))
+            except Exception as exc:
+                logger.warning(
+                    "analyzer_execution_failed",
+                    analyzer=getattr(analyzer, "name", str(analyzer)),
+                    error=str(exc),
+                )
 
         # 3. AI provider (optional)
         ai_summary = ""
@@ -306,11 +338,26 @@ class ReviewEngine:
 
         # Scanners
         for scanner in self.scanners:
-            all_findings.extend(scanner.scan_source(content, rel_path))
+            try:
+                all_findings.extend(scanner.scan_source(content, rel_path))
+            except Exception as exc:
+                logger.warning(
+                    "scanner_execution_failed",
+                    scanner=getattr(scanner, "name", str(scanner)),
+                    file=rel_path,
+                    error=str(exc),
+                )
 
         # Analyzers
         for analyzer in self.analyzers:
-            all_findings.extend(analyzer.analyze(code_ctx))
+            try:
+                all_findings.extend(analyzer.analyze(code_ctx))
+            except Exception as exc:
+                logger.warning(
+                    "analyzer_execution_failed",
+                    analyzer=getattr(analyzer, "name", str(analyzer)),
+                    error=str(exc),
+                )
 
         # AI reasoning
         ai_summary = ""

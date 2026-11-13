@@ -139,6 +139,7 @@ class EventStore:
         self.checkpoint_interval = checkpoint_interval
         self._local = threading.local()
         self._write_lock = threading.RLock()
+        self._all_conns: set[sqlite3.Connection] = set()
         self._closed = False
         from agentblackbox.storage.blob_store import BlobStore
         self.blob_store = BlobStore(self.blobs_dir)
@@ -190,21 +191,24 @@ class EventStore:
 
     def _get_thread_conn(self) -> sqlite3.Connection:
         """Return persistent thread-local SQLite connection configured with WAL and busy timeout."""
+        if self._closed:
+            raise RuntimeError("Cannot access EventStore after close() has been called.")
         conn: Optional[sqlite3.Connection] = getattr(self._local, "conn", None)
-        if conn is None or self._closed:
+        if conn is None:
             conn = sqlite3.connect(
                 str(self.db_path),
                 timeout=15.0,
                 isolation_level=None,  # Explicit transaction management
-                check_same_thread=True,
+                check_same_thread=False,
             )
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL;")
             conn.execute("PRAGMA synchronous=NORMAL;")
             conn.execute("PRAGMA foreign_keys=ON;")
             conn.execute("PRAGMA busy_timeout=10000;")
+            with self._write_lock:
+                self._all_conns.add(conn)
             self._local.conn = conn
-            self._closed = False
         return conn
 
     @contextmanager
@@ -213,19 +217,13 @@ class EventStore:
         if write:
             with self._write_lock:
                 conn = self._get_thread_conn()
-                need_tx = not conn.in_transaction
-                if need_tx:
-                    conn.execute("BEGIN IMMEDIATE")
+                conn.execute("BEGIN IMMEDIATE")
                 try:
                     yield conn
-                    if conn.in_transaction:
-                        conn.execute("COMMIT")
+                    conn.execute("COMMIT")
                 except Exception:
                     if conn.in_transaction:
-                        try:
-                            conn.execute("ROLLBACK")
-                        except Exception:
-                            pass
+                        conn.execute("ROLLBACK")
                     raise
         else:
             conn = self._get_thread_conn()
@@ -236,15 +234,16 @@ class EventStore:
         return self._connection(write=write)
 
     def close(self) -> None:
-        """Close the current thread's SQLite connection cleanly."""
+        """Close all tracked SQLite connections across threads deterministically."""
         with self._write_lock:
             self._closed = True
-            conn: Optional[sqlite3.Connection] = getattr(self._local, "conn", None)
-            if conn is not None:
+            for conn in list(self._all_conns):
                 try:
                     conn.close()
-                finally:
-                    self._local.conn = None
+                except Exception:
+                    pass
+            self._all_conns.clear()
+            self._local.conn = None
 
     def record_event(self, event: Event) -> Event:
         """Alias for insert_event with serialized HMAC chain append."""

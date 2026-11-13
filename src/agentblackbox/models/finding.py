@@ -52,6 +52,10 @@ class FindingCategory(str, Enum):
     STYLE = "style"
 
 
+# Alias for backward compatibility and spec compliance
+Category = FindingCategory
+
+
 @dataclass
 class Finding:
     """Individual code review finding with actionable remediation."""

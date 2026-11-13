@@ -1,131 +1,90 @@
-"""Code clone and structural duplication analyzer."""
+"""Code clone and structural duplication analyzer using O(N) AST structural hashing."""
 
 import ast
 import copy
 import hashlib
-from typing import Dict, List, Optional, Tuple
+from collections import defaultdict
+from typing import List, Optional
 
 from agentblackbox.analyzers.base import BaseAnalyzer
 from agentblackbox.models.context import CodeContext
 from agentblackbox.models.diff import GitDiff
-from agentblackbox.models.finding import Finding, Severity
+from agentblackbox.models.finding import Category, Finding, Severity
 
 
-class _NodeNormalizer(ast.NodeTransformer):
-    """Normalizes AST variable names, constants, and function/arg names to compute structural hashes."""
+class _ASTCanonicalizer(ast.NodeTransformer):
+    """Strip variable/argument names and docstrings so structurally identical functions hash equally."""
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef:
-        self.generic_visit(node)
-        node.name = "func"
-        for arg in node.args.args:
-            arg.arg = "param"
-        for arg in getattr(node.args, "posonlyargs", []):
-            arg.arg = "param"
-        for arg in getattr(node.args, "kwonlyargs", []):
-            arg.arg = "param"
-        if node.args.vararg:
-            node.args.vararg.arg = "vararg"
-        if node.args.kwarg:
-            node.args.kwarg.arg = "kwarg"
-        return node
+    def visit_Name(self, node: ast.Name) -> ast.AST:
+        return ast.copy_location(ast.Name(id="_var", ctx=node.ctx), node)
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AsyncFunctionDef:
-        self.generic_visit(node)
-        node.name = "func"
-        for arg in node.args.args:
-            arg.arg = "param"
-        for arg in getattr(node.args, "posonlyargs", []):
-            arg.arg = "param"
-        for arg in getattr(node.args, "kwonlyargs", []):
-            arg.arg = "param"
-        if node.args.vararg:
-            node.args.vararg.arg = "vararg"
-        if node.args.kwarg:
-            node.args.kwarg.arg = "kwarg"
-        return node
-
-    def visit_Name(self, node: ast.Name) -> ast.Name:
-        # Normalize all identifiers to 'var' for structural equivalence
-        return ast.Name(id="var", ctx=node.ctx)
-
-    def visit_Constant(self, node: ast.Constant) -> ast.Constant:
-        # Normalize constants
-        return ast.Constant(value=None)
+    def visit_arg(self, node: ast.arg) -> ast.AST:
+        return ast.copy_location(ast.arg(arg="_arg", annotation=None), node)
 
 
-def _compute_structural_hash(node: ast.AST) -> str:
-    """Compute normalized structural hash of an AST node."""
-    cloned = copy.deepcopy(node)
-    normalizer = _NodeNormalizer()
-    normalized = normalizer.visit(cloned)
-    ast.fix_missing_locations(normalized)
-    dumped = ast.dump(normalized, annotate_fields=False)
-    return hashlib.sha256(dumped.encode("utf-8")).hexdigest()[:16]
+def _structural_hash(func_node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+    body = list(func_node.body)
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(getattr(body[0], "value", None), ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body = body[1:]
+    if len(body) < 4:
+        return None
+    cloned = copy.deepcopy(func_node)
+    cloned.name = "_fn"
+    cloned.body = body
+    canonical = _ASTCanonicalizer().visit(cloned)
+    dumped = ast.dump(canonical, annotate_fields=True, include_attributes=False)
+    return hashlib.sha256(dumped.encode("utf-8")).hexdigest()
 
 
 class DuplicationAnalyzer(BaseAnalyzer):
-    """Detects duplicated logic blocks and copy-pasted implementations."""
-
-    @property
-    def name(self) -> str:
-        return "duplication_analyzer"
+    name = "duplication"
 
     def analyze(
-        self,
-        code_context: CodeContext,
-        target_diff: Optional[GitDiff] = None,
+        self, code_context: CodeContext, target_diff: Optional[GitDiff] = None
     ) -> List[Finding]:
-        findings: List[Finding] = []
-        # Map: structural_hash -> list of (file_path, fn_name, line_start, line_end)
-        hash_to_fns: Dict[str, List[Tuple[str, str, int, int]]] = {}
-
-        for file_path, ctx in code_context.files.items():
-            if not ctx.raw_source:
+        buckets: dict[str, list[tuple[str, str, int, int]]] = defaultdict(list)
+        for file_path, f_entry in code_context.files.items():
+            source = f_entry if isinstance(f_entry, str) else getattr(f_entry, "raw_source", "")
+            if not source:
                 continue
-
             try:
-                tree = ast.parse(ctx.raw_source, filename=file_path)
+                tree = ast.parse(source, filename=file_path)
             except (SyntaxError, ValueError):
                 continue
-
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    fn_len = (node.end_lineno or node.lineno) - node.lineno + 1
-                    # Only check meaningful functions (> 5 lines)
-                    if fn_len >= 5:
-                        shash = _compute_structural_hash(node)
-                        hash_to_fns.setdefault(shash, []).append(
-                            (file_path, node.name, node.lineno, node.end_lineno or node.lineno)
-                        )
+                    digest = _structural_hash(node)
+                    if digest:
+                        end_line = getattr(node, "end_lineno", node.lineno + 4) or (node.lineno + 4)
+                        buckets[digest].append((file_path, node.name, node.lineno, end_line))
 
-        # Flag duplicated instances
-        reported_pairs = set()
-        for shash, occurrences in hash_to_fns.items():
-            if len(occurrences) > 1:
-                for idx, (fpath, fname, start, end) in enumerate(occurrences):
-                    other_occurrences = [
-                        f"{o_path}:{o_name} (L{o_start})"
-                        for o_idx, (o_path, o_name, o_start, _) in enumerate(occurrences)
-                        if o_idx != idx
-                    ]
-                    pair_key = tuple(sorted([f"{fpath}:{fname}", other_occurrences[0]]))
-                    if pair_key in reported_pairs:
-                        continue
-                    reported_pairs.add(pair_key)
-
-                    findings.append(
-                        Finding(
-                            title=f"Duplicated Logic Clone: {fname}",
-                            severity=Severity.MEDIUM,
-                            file_path=fpath,
-                            line_start=start,
-                            line_end=end,
-                            category="duplication",
-                            message=f"Function '{fname}' has identical structural logic to {', '.join(other_occurrences)}.",
-                            why_it_matters="Duplicated code increases maintenance costs and leads to inconsistent bug fixes across copies.",
-                            suggested_fix="Extract common logic into a shared helper function or utility module.",
-                            rule_id="DUPL-001",
-                        )
+        findings: List[Finding] = []
+        for digest, locations in buckets.items():
+            if len(locations) < 2:
+                continue
+            primary_file, primary_fn, _, _ = locations[0]
+            for dup_file, dup_fn, start_line, end_line in locations[1:]:
+                findings.append(
+                    Finding(
+                        rule_id="DUP-001",
+                        title=f"Duplicate function logic in '{dup_fn}'",
+                        severity=Severity.LOW,
+                        category=Category.DUPLICATION,
+                        file_path=dup_file,
+                        line_start=start_line,
+                        line_end=end_line,
+                        message=(
+                            f"Function '{dup_fn}' is structurally identical to "
+                            f"'{primary_fn}' in {primary_file}."
+                        ),
+                        why_it_matters="Duplicated logic increases maintenance overhead and bug drift.",
+                        suggested_fix=f"Extract shared logic from '{primary_fn}' and '{dup_fn}' into a reusable helper.",
+                        confidence=0.9,
                     )
-
+                )
         return findings

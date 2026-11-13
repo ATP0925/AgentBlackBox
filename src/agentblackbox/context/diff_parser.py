@@ -79,12 +79,16 @@ def parse_unified_diff(raw_diff: str) -> GitDiff:
             i += 1
             continue
 
-        if line.startswith("similarity index ") or line.startswith("rename from "):
+        if line.startswith("old mode ") or line.startswith("new mode "):
+            i += 1
+            continue
+
+        if line.startswith("similarity index ") or line.startswith("rename from ") or line.startswith("rename to "):
             current_file.is_rename = True
             i += 1
             continue
 
-        if line.startswith("Binary files ") or "differ" in line:
+        if line.startswith("Binary files ") or "differ" in line or line.startswith("GIT binary patch"):
             current_file.is_binary = True
             i += 1
             continue

@@ -1,8 +1,10 @@
 # AgentBlackBox (`abb`)
 
-**AI-powered code analysis, automated code review platform, and audit flight recorder for developers and autonomous AI agents.**
+**The Flight Recorder & Automated Code Review Guard for Autonomous AI Agents.**
 
-AgentBlackBox delivers deep, actionable code review and static analysis inspired by modern automated code reviewers (such as CodeRabbit)—implemented cleanly from scratch with safe AST parsing, cross-file dependency call-graph context, token-budgeted pruning, multi-tier severity scoring, and hybrid AI reasoning. In addition, it provides a local-first tamper-evident audit flight recorder for autonomous AI coding agents.
+AgentBlackBox protects your codebase across two phases of autonomous AI coding (Claude Code, Cursor, Antigravity, OpenCode):
+1. **Live Flight Recorder (`abb start`, `abb run`, `abb verify`, `abb blame`)**: Records file mutations, git ref transitions, and shell executions in a tamper-evident SQLite WAL hash chain—redacting secrets *before* they touch disk and scoring command risk via `shlex` token analysis.
+2. **Automated Diff & Static Code Review (`abb review`, `abb analyze`)**: Runs deterministic AST/CWE security scanners, O(N) structural duplication analysis, and AI-assisted diff review (`gemini-2.5-flash` / OpenAI / Anthropic / Offline) before agent changes are merged.
 
 ---
 
@@ -26,7 +28,7 @@ AgentBlackBox delivers deep, actionable code review and static analysis inspired
 
 ### 3. Hybrid Analysis Engine (Deterministic + AI)
 - **Fast Deterministic Scanners**: AST visitors and pattern detectors run in milliseconds without external network calls.
-- **Pluggable AI Reasoning Layer**: Supports Google Gemini (`gemini-1.5-flash`), OpenAI-compatible models (`gpt-4o-mini`, Ollama, vLLM, DeepSeek, Groq), Anthropic, and offline deterministic modes (`--ai offline`).
+- **Pluggable AI Reasoning Layer**: Supports Google Gemini (`gemini-2.5-flash`), OpenAI-compatible models (`gpt-4o-mini`, Ollama, vLLM, DeepSeek, Groq), Anthropic, and offline deterministic modes (`--ai offline`).
 - **Zero Execution Risk**: Pure static analysis that NEVER imports or executes analyzed project code.
 
 ### 4. Enterprise-Ready Reporting & CI/CD Export
