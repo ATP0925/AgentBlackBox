@@ -1,6 +1,7 @@
 """SQLite-based event store with WAL mode, secret redaction, and hash chaining."""
 
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,6 +20,7 @@ from agentblackbox.storage.models import (
     _compute_event_hash,
     _compute_event_hash_v1,
     _hash_payload,
+    _utcnow,
 )
 
 logger = structlog.get_logger()
@@ -33,7 +35,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     ended_at        TEXT,
     status          TEXT DEFAULT 'recording',
     total_events    INTEGER DEFAULT 0,
-    risk_score      REAL DEFAULT 0.0
+    risk_score      REAL DEFAULT 0.0,
+    v1_max_seq      INTEGER DEFAULT 0,
+    is_keyed        INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -102,6 +106,11 @@ _EVENT_MIGRATION_COLUMNS: List[Tuple[str, str]] = [
     ("blob_hash", "TEXT"),
 ]
 
+_SESSION_MIGRATION_COLUMNS: List[Tuple[str, str]] = [
+    ("v1_max_seq", "INTEGER DEFAULT 0"),
+    ("is_keyed", "INTEGER DEFAULT 0"),
+]
+
 
 class EventStore:
     """SQLite-backed storage for events, sessions, snapshots, and alerts.
@@ -131,14 +140,34 @@ class EventStore:
             conn.executescript(_INDEX_SCHEMA)
 
     def _ensure_event_columns(self, conn: sqlite3.Connection) -> None:
-        """Add v0.2 columns to pre-existing v0.1 event tables if absent."""
-        existing = {
+        """Add v0.2 columns to pre-existing v0.1 event and session tables if absent."""
+        existing_events = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(events)").fetchall()
         }
         for col_name, col_def in _EVENT_MIGRATION_COLUMNS:
-            if col_name not in existing:
+            if col_name not in existing_events:
                 conn.execute(f"ALTER TABLE events ADD COLUMN {col_name} {col_def}")
+
+        existing_sessions = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
+        }
+        for col_name, col_def in _SESSION_MIGRATION_COLUMNS:
+            if col_name not in existing_sessions:
+                conn.execute(f"ALTER TABLE sessions ADD COLUMN {col_name} {col_def}")
+
+        try:
+            conn.execute(
+                """UPDATE sessions SET v1_max_seq = (
+                       SELECT COALESCE(MAX(seq), 0) FROM events
+                       WHERE events.session_id = sessions.id AND events.hash_version = 1
+                   ) WHERE v1_max_seq = 0 AND EXISTS (
+                       SELECT 1 FROM events WHERE events.session_id = sessions.id AND events.hash_version = 1
+                   )"""
+            )
+        except sqlite3.OperationalError:
+            pass
 
     @contextmanager
     def _connect(self, write: bool = False) -> Generator[sqlite3.Connection, None, None]:
@@ -180,15 +209,18 @@ class EventStore:
         Returns:
             The same session (with id set).
         """
+        is_keyed = 1 if (os.environ.get("ABB_HMAC_KEY") or getattr(session, "is_keyed", False)) else 0
+        v1_max_seq = getattr(session, "v1_max_seq", 0)
         with self._connect() as conn:
             conn.execute(
                 """INSERT INTO sessions (id, name, workspace_path, agent_hint,
-                   started_at, ended_at, status, total_events, risk_score)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   started_at, ended_at, status, total_events, risk_score, v1_max_seq, is_keyed)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session.id, session.name, session.workspace_path,
                     session.agent_hint, session.started_at, session.ended_at,
                     session.status, session.total_events, session.risk_score,
+                    v1_max_seq, is_keyed,
                 ),
             )
         logger.info("session_created", session_id=session.id)
@@ -209,6 +241,7 @@ class EventStore:
             ).fetchone()
         if row is None:
             return None
+        keys = row.keys()
         return Session(
             id=row["id"], name=row["name"],
             workspace_path=row["workspace_path"],
@@ -216,6 +249,8 @@ class EventStore:
             started_at=row["started_at"], ended_at=row["ended_at"],
             status=row["status"], total_events=row["total_events"],
             risk_score=row["risk_score"],
+            v1_max_seq=row["v1_max_seq"] if "v1_max_seq" in keys and row["v1_max_seq"] is not None else 0,
+            is_keyed=bool(row["is_keyed"]) if "is_keyed" in keys and row["is_keyed"] is not None else False,
         )
 
     def list_sessions(self, limit: int = 50) -> List[Session]:
@@ -240,6 +275,8 @@ class EventStore:
                 started_at=r["started_at"], ended_at=r["ended_at"],
                 status=r["status"], total_events=r["total_events"],
                 risk_score=r["risk_score"],
+                v1_max_seq=r["v1_max_seq"] if "v1_max_seq" in r.keys() and r["v1_max_seq"] is not None else 0,
+                is_keyed=bool(r["is_keyed"]) if "is_keyed" in r.keys() and r["is_keyed"] is not None else False,
             )
             for r in rows
         ]
@@ -348,10 +385,12 @@ class EventStore:
                             ),
                         )
 
+                    keyed_flag = 1 if os.environ.get("ABB_HMAC_KEY") else 0
                     conn.execute(
                         """UPDATE sessions SET total_events = total_events + 1,
-                           risk_score = MAX(risk_score, ?) WHERE id = ?""",
-                        (event.risk_score, event.session_id),
+                           risk_score = MAX(risk_score, ?),
+                           is_keyed = MAX(is_keyed, ?) WHERE id = ?""",
+                        (event.risk_score, keyed_flag, event.session_id),
                     )
                 return event
             except (sqlite3.OperationalError, sqlite3.IntegrityError) as e:
@@ -416,18 +455,60 @@ class EventStore:
                     max_risks.get(event.session_id, 0.0), event.risk_score
                 )
 
+            keyed_flag = 1 if os.environ.get("ABB_HMAC_KEY") else 0
             for sid, cnt in counts.items():
                 conn.execute(
                     """UPDATE sessions SET total_events = total_events + ?,
-                       risk_score = MAX(risk_score, ?) WHERE id = ?""",
-                    (cnt, max_risks[sid], sid),
+                       risk_score = MAX(risk_score, ?),
+                       is_keyed = MAX(is_keyed, ?) WHERE id = ?""",
+                    (cnt, max_risks[sid], keyed_flag, sid),
                 )
+
+    def checkpoint_chain_tip(self, session_id: str, checkpoint_path: Optional[Path] = None) -> Path:
+        """Write head-tip checkpoint to an external anchor file to detect tail truncation.
+
+        Args:
+            session_id: Session ID to checkpoint.
+            checkpoint_path: Path to write checkpoint JSON. Defaults to
+                ``<db_parent>/checkpoints/<session_id>.tip``.
+
+        Returns:
+            Path to the written checkpoint file.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT seq, event_hash, timestamp FROM events WHERE session_id = ? ORDER BY seq DESC, id DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+
+        last_seq = int(row["seq"]) if row and row["seq"] is not None else 0
+        head_hash = row["event_hash"] if row and row["event_hash"] else "GENESIS"
+        ts = row["timestamp"] if row and row["timestamp"] else _utcnow()
+
+        cp_dir = self.db_path.parent / "checkpoints"
+        cp_file = checkpoint_path or (cp_dir / f"{session_id}.tip")
+        cp_file.parent.mkdir(parents=True, exist_ok=True)
+
+        data = {
+            "session_id": session_id,
+            "last_seq": last_seq,
+            "head_hash": head_hash,
+            "checkpoint_time": _utcnow(),
+            "event_time": ts,
+        }
+        cp_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        try:
+            cp_file.chmod(0o600)
+        except (OSError, NotImplementedError):
+            pass
+        return cp_file
 
     def verify_chain(
         self,
         session_id: str,
         verify_blobs: bool = True,
         hmac_key: Optional[bytes] = None,
+        checkpoint_path: Optional[Path] = None,
     ) -> ChainVerificationResult:
         """Verify sequence continuity, payload integrity, and hash-chain linkage.
 
@@ -435,11 +516,16 @@ class EventStore:
             session_id: Session ID to verify.
             verify_blobs: If True, re-hashes on-disk content blobs and fails if missing or tampered.
             hmac_key: Optional HMAC key for HMAC-SHA256 chain verification.
+            checkpoint_path: Optional path to external tip checkpoint file. Defaults to
+                checking ``<db_parent>/checkpoints/<session_id>.tip`` if it exists.
 
         Returns:
             ChainVerificationResult indicating validity and failure reason if tampered.
         """
         with self._connect() as conn:
+            session_row = conn.execute(
+                "SELECT * FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
             rows = conn.execute(
                 "SELECT * FROM events WHERE session_id = ? ORDER BY seq ASC, id ASC",
                 (session_id,),
@@ -447,6 +533,20 @@ class EventStore:
 
         if not rows:
             return ChainVerificationResult(session_id=session_id, valid=True, total_events=0)
+
+        s_keys = session_row.keys() if session_row else []
+        v1_cutoff_seq = session_row["v1_max_seq"] if session_row and "v1_max_seq" in s_keys and session_row["v1_max_seq"] is not None else 0
+        is_keyed = bool(session_row["is_keyed"]) if session_row and "is_keyed" in s_keys and session_row["is_keyed"] is not None else False
+
+        active_key = hmac_key or (os.environ.get("ABB_HMAC_KEY").encode("utf-8") if os.environ.get("ABB_HMAC_KEY") else None)
+        if is_keyed and not active_key:
+            return ChainVerificationResult(
+                session_id=session_id,
+                valid=False,
+                total_events=len(rows),
+                broken_at_seq=1,
+                reason="HMAC verification failure: session was recorded with HMAC key but no verification key was provided",
+            )
 
         expected_prev = "GENESIS"
         for idx, row in enumerate(rows, start=1):
@@ -477,9 +577,17 @@ class EventStore:
                     reason=f"payload_hash mismatch at seq {event.seq}",
                 )
             if getattr(event, "hash_version", 2) == 1:
+                if event.seq > v1_cutoff_seq:
+                    return ChainVerificationResult(
+                        session_id=session_id,
+                        valid=False,
+                        total_events=len(rows),
+                        broken_at_seq=event.seq,
+                        reason=f"Downgrade attack detected: event at seq {event.seq} claims legacy hash_version=1 (migration cutoff is seq {v1_cutoff_seq})",
+                    )
                 expected_event_hash = _compute_event_hash_v1(event)
             else:
-                expected_event_hash = _compute_event_hash(event, hmac_key=hmac_key)
+                expected_event_hash = _compute_event_hash(event, hmac_key=active_key)
 
             if event.event_hash != expected_event_hash:
                 return ChainVerificationResult(
@@ -501,6 +609,31 @@ class EventStore:
                     )
 
             expected_prev = event.event_hash
+
+        # External tip checkpoint verification (detects tail truncation)
+        cp_file = checkpoint_path or (self.db_path.parent / "checkpoints" / f"{session_id}.tip")
+        if cp_file.exists():
+            try:
+                cp = json.loads(cp_file.read_text(encoding="utf-8"))
+                expected_count = int(cp.get("last_seq", 0))
+                if len(rows) < expected_count:
+                    return ChainVerificationResult(
+                        session_id=session_id,
+                        valid=False,
+                        total_events=len(rows),
+                        broken_at_seq=len(rows),
+                        reason=f"Tail truncation detected: checkpoint tip recorded {expected_count} events ({cp.get('head_hash', '')[:10]}...), but database only contains {len(rows)} events",
+                    )
+                if rows and cp.get("head_hash") and rows[-1]["event_hash"] != cp["head_hash"]:
+                    return ChainVerificationResult(
+                        session_id=session_id,
+                        valid=False,
+                        total_events=len(rows),
+                        broken_at_seq=len(rows),
+                        reason=f"Tip mismatch: database head hash ({rows[-1]['event_hash'][:10]}...) does not match checkpoint tip ({cp['head_hash'][:10]}...)",
+                    )
+            except Exception as e:
+                logger.warning("checkpoint_read_error", error=str(e))
 
         return ChainVerificationResult(
             session_id=session_id,

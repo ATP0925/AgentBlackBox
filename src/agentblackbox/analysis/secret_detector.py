@@ -5,7 +5,9 @@ import hmac
 import math
 import os
 import re
+import secrets
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional
 
 # Pre-compiled patterns for known secret formats
@@ -46,13 +48,59 @@ _FALSE_POSITIVE_PATTERNS = [
 ]
 
 
+_CACHED_SALT: Optional[str] = None
+
+
+def _get_or_create_secret_salt(salt_override: Optional[str] = None) -> bytes:
+    """Return salt for HMAC secret fingerprinting without hardcoded public fallbacks.
+
+    Priority:
+    1. Explicit salt_override parameter
+    2. ABB_SECRET_SALT environment variable
+    3. Persistent random 32-byte salt stored at ~/.agentblackbox/.secret_salt (mode 0600)
+    4. Ephemeral in-process random 32-byte salt if filesystem is read-only
+    """
+    global _CACHED_SALT
+    if salt_override:
+        return salt_override.encode("utf-8")
+
+    env_salt = os.environ.get("ABB_SECRET_SALT")
+    if env_salt:
+        return env_salt.encode("utf-8")
+
+    if _CACHED_SALT:
+        return _CACHED_SALT.encode("utf-8")
+
+    salt_path = Path.home() / ".agentblackbox" / ".secret_salt"
+    try:
+        if salt_path.exists():
+            content = salt_path.read_text(encoding="utf-8").strip()
+            if content:
+                _CACHED_SALT = content
+                return content.encode("utf-8")
+        salt_path.parent.mkdir(parents=True, exist_ok=True)
+        new_salt = secrets.token_hex(32)
+        salt_path.write_text(new_salt, encoding="utf-8")
+        try:
+            salt_path.chmod(0o600)
+        except (OSError, NotImplementedError):
+            pass  # Windows or restricted ACL filesystem
+        _CACHED_SALT = new_salt
+        return new_salt.encode("utf-8")
+    except Exception:
+        if not _CACHED_SALT:
+            _CACHED_SALT = secrets.token_hex(32)
+        return _CACHED_SALT.encode("utf-8")
+
+
 def _secret_fingerprint(raw: str, salt: Optional[str] = None) -> str:
     """Deterministic 8-char HMAC-SHA256 fingerprint of secret without leaking content.
 
     Prevents offline rainbow table / brute-force dictionary attacks on short secrets.
-    Uses configurable ABB_SECRET_SALT or default audit salt key.
+    Uses configurable ABB_SECRET_SALT, explicit salt, or a persistent local random key (0600).
+    Has zero hardcoded salt fallbacks.
     """
-    key = (salt or os.environ.get("ABB_SECRET_SALT") or "agentblackbox-audit-salt-v1").encode("utf-8")
+    key = _get_or_create_secret_salt(salt)
     return hmac.new(key, raw.encode("utf-8"), hashlib.sha256).hexdigest()[:8]
 
 

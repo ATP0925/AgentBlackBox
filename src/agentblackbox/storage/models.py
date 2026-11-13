@@ -254,6 +254,8 @@ class Session:
     status: str = "recording"
     total_events: int = 0
     risk_score: float = 0.0
+    v1_max_seq: int = 0
+    is_keyed: bool = False
 
     def stop(self) -> None:
         """Mark session as stopped."""

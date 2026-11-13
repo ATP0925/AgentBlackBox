@@ -6,7 +6,7 @@
 
 > Every autonomous system needs a black box.
 
-**Status:** `v0.2.0a2` (Live background daemon, redact-first storage, tamper-evident hash chain with optional HMAC signing, content-addressed blob store, git & terminal recording, Claude Code attribution hooks, and localhost Bearer-auth API — **112 tests passing**.)
+**Status:** `v0.2.0a3` (Live background daemon, redact-first storage, tamper-evident hash chain with HMAC signing, watermark downgrade protection, external tip checkpointing, content-addressed blob store, git & terminal recording, Claude Code attribution hooks, and localhost Bearer-auth API — **116 tests passing**.)
 
 ---
 
@@ -128,7 +128,7 @@ ABB_API_TOKEN="<your-token>" uvicorn agentblackbox.api.main:app --host 127.0.0.1
 python -m pytest tests/ -v --tb=short
 ```
 
-**112 tests passing** across redactor, secret detection & HMAC fingerprinting, risk scoring, hash chain & migration, HMAC chain signing, blob store, filesystem watcher, git observer & hooks, terminal recorder, agent hooks, background daemon, timeline, blame, API auth, and FastAPI routes.
+**116 tests passing** across tokenized key redactor, dynamic random salt HMAC fingerprinting, risk scoring, hash chain watermark downgrade protection, HMAC chain enforcement, external tip checkpointing, blob store, filesystem watcher, git observer & hooks, terminal recorder, agent hooks, background daemon, timeline, blame, API auth, and FastAPI routes.
 
 ---
 

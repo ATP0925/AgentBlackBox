@@ -228,6 +228,7 @@ class TestHashChainAndAttribution:
         """Legacy sessions with v1 hashes must still pass chain verification."""
         import json
         from agentblackbox.storage.models import _compute_event_hash_v1, _hash_payload
+        sample_session.v1_max_seq = 1
         store.create_session(sample_session)
         payload = {"cmd": "ls"}
         e1 = Event(
@@ -315,6 +316,99 @@ class TestHashChainAndAttribution:
             assert "event_hash mismatch" in (wrong_res.reason or "")
         finally:
             os.environ.pop("ABB_HMAC_KEY", None)
+
+    def test_verify_chain_detects_sqlite_direct_downgrade_to_v1(
+        self, store: EventStore, sample_session: Session
+    ) -> None:
+        """Attacker modifying SQLite directly to set hash_version=1 must be caught by watermark cutoff."""
+        from agentblackbox.storage.models import _compute_event_hash_v1
+        store.create_session(sample_session)
+        e1 = store.insert_event(Event(
+            session_id=sample_session.id,
+            event_type=EventType.CMD_EXECUTE,
+            payload={"cmd": "pwd"},
+        ))
+        e2 = store.insert_event(Event(
+            session_id=sample_session.id,
+            event_type=EventType.CMD_EXECUTE,
+            payload={"cmd": "ls"},
+        ))
+        assert store.verify_chain(sample_session.id).valid is True
+
+        # Attacker with direct SQLite access tries to tamper with e2 by setting hash_version=1
+        e2.hash_version = 1
+        fake_v1_hash = _compute_event_hash_v1(e2)
+        with sqlite3.connect(str(store.db_path)) as conn:
+            conn.execute(
+                "UPDATE events SET hash_version = 1, event_hash = ? WHERE seq = 2",
+                (fake_v1_hash,),
+            )
+            conn.commit()
+
+        res = store.verify_chain(sample_session.id)
+        assert res.valid is False
+        assert "Downgrade attack detected" in (res.reason or "")
+        assert "seq 2" in (res.reason or "")
+
+    def test_keyed_session_rejects_unkeyed_verification(self, tmp_path: Path) -> None:
+        """A session recorded with HMAC key must reject unkeyed verification."""
+        import os
+        db_path = tmp_path / "keyed_sess.db"
+        store = EventStore(db_path)
+        sess = Session(workspace_path=str(tmp_path))
+        key = b"audit-hmac-key-999"
+        os.environ["ABB_HMAC_KEY"] = key.decode("utf-8")
+        try:
+            store.create_session(sess)
+            store.insert_event(Event(
+                session_id=sess.id,
+                event_type=EventType.CMD_EXECUTE,
+                payload={"cmd": "whoami"},
+            ))
+        finally:
+            os.environ.pop("ABB_HMAC_KEY", None)
+
+        # Environment no longer has key; calling verify_chain without key must fail
+        res = store.verify_chain(sess.id)
+        assert res.valid is False
+        assert "HMAC verification failure" in (res.reason or "")
+
+        # Supplying correct key verifies cleanly
+        valid_res = store.verify_chain(sess.id, hmac_key=key)
+        assert valid_res.valid is True
+
+    def test_checkpoint_detects_tail_truncation(
+        self, store: EventStore, sample_session: Session
+    ) -> None:
+        """External checkpoint tip detects middle and tail deletions."""
+        store.create_session(sample_session)
+        for i in range(5):
+            store.insert_event(Event(
+                session_id=sample_session.id,
+                event_type=EventType.CMD_EXECUTE,
+                payload={"step": i},
+            ))
+
+        assert store.verify_chain(sample_session.id).valid is True
+
+        # Write external checkpoint tip
+        cp_file = store.checkpoint_chain_tip(sample_session.id)
+        assert cp_file.exists()
+
+        # Attacker deletes the last 2 events directly in SQLite (tail truncation)
+        with sqlite3.connect(str(store.db_path)) as conn:
+            conn.execute("DELETE FROM events WHERE seq >= 4")
+            conn.commit()
+
+        # Without checkpoint, plain verify on prefix would pass!
+        prefix_res = store.verify_chain(sample_session.id, checkpoint_path=Path("nonexistent.tip"))
+        assert prefix_res.valid is True
+
+        # With external checkpoint tip, tail truncation is immediately detected
+        res = store.verify_chain(sample_session.id, checkpoint_path=cp_file)
+        assert res.valid is False
+        assert "Tail truncation detected" in (res.reason or "")
+        assert "5 events" in (res.reason or "")
 
     def test_multiprocess_concurrent_inserts_valid_chain(
         self, tmp_path: Path

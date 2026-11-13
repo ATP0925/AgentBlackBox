@@ -11,11 +11,63 @@ from agentblackbox.analysis.secret_detector import (
     _shannon_entropy,
 )
 
-_SENSITIVE_KEY_PATTERN = re.compile(
-    r"^(?!.*(?:token_count|token_usage|token_limit|token_cost|tokens|author\b|credits?\b))"
-    r"(?:.*[_-])?(?:password|passwd|passphrase|secret(?:_key)?|api[_-]?key|private[_-]?key|authorization|credentials?|token)$",
-    re.IGNORECASE,
-)
+def is_sensitive_key_name(key: str) -> bool:
+    """Robust tokenized classifier for sensitive payload/dictionary keys.
+
+    Splits camelCase, snake_case, and kebab-case into tokens and checks for
+    credentials, tokens, keys, and passwords. Handles run-together terms like
+    'dbpassword', 'accesstoken', 'refreshtoken', 'pwd', and multi-word names
+    like 'aws_secret_access_key' and 'client_secret_value' without false
+    positives on 'author', 'credit', or LLM token usage metrics.
+    """
+    if not isinstance(key, str) or not key:
+        return False
+
+    k_lower = key.lower()
+
+    # 1. Exact safe overrides (Never redact)
+    if k_lower in {"author", "authors", "authority", "credit", "credits"}:
+        return False
+
+    # Check LLM token usage metrics
+    if any(m in k_lower for m in ["token_count", "token_usage", "token_limit", "token_cost", "tokencount", "tokenusage", "tokenlimit"]):
+        return False
+    if any(k_lower.startswith(m) for m in ["max_token", "maxtoken", "prompt_token", "prompttoken", "completion_token", "completiontoken", "total_token", "totaltoken", "input_token", "output_token"]):
+        return False
+
+    # 2. Tokenize on camelCase, underscores, hyphens, dots
+    decamel = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key)
+    tokens = [t.lower() for t in re.split(r"[^a-zA-Z0-9]+", decamel) if t]
+    pure = re.sub(r"[^a-zA-Z0-9]", "", k_lower)
+
+    # 3. Check for password / pwd indicators anywhere
+    if any(t in {"password", "passwd", "passphrase", "pwd"} for t in tokens):
+        return True
+    if any(pure.endswith(p) for p in ["password", "passwd", "passphrase", "pwd"]):
+        return True
+
+    # 4. Check for secret indicators (client_secret, secret_key, client_secret_value)
+    if "secret" in tokens or "secrets" in tokens or "clientsecret" in pure:
+        return True
+
+    # 5. Check for key combinations (api_key, access_key, private_key, secret_key, aws_secret_access_key)
+    if any(t in {"apikey", "privatekey", "accesskey", "secretkey"} for t in tokens) or any(pure.endswith(p) for p in ["apikey", "privatekey", "accesskey", "secretkey"]):
+        return True
+    for i in range(len(tokens) - 1):
+        if tokens[i] in {"api", "private", "access", "secret", "auth", "signing"} and tokens[i+1] == "key":
+            return True
+
+    # 6. Check for tokens (access_token, auth_token, refresh_token, github_token, etc.)
+    if any(t in {"accesstoken", "authtoken", "refreshtoken", "bearertoken", "sessiontoken"} for t in tokens) or any(pure.endswith(p) for p in ["accesstoken", "authtoken", "refreshtoken", "bearertoken", "sessiontoken"]):
+        return True
+    if "token" in tokens and not any(t in {"count", "usage", "limit", "cost", "length", "tokens"} for t in tokens):
+        return True
+
+    # 7. Check for credentials & authorization
+    if any(t in {"credential", "credentials", "authorization"} for t in tokens):
+        return True
+
+    return False
 
 _ASSIGN_PATTERN = re.compile(
     r'((?:key|secret|token|password|credential|auth|bearer)\s*[:=]\s*(?:["\']?))([^\s"\'`]{8,})((?:["\']?))',
@@ -115,8 +167,7 @@ def redact_payload(obj: Any, source: str = "payload") -> Tuple[Any, List[SecretM
     if isinstance(obj, dict):
         clean_dict = {}
         for k, v in obj.items():
-            norm_k = re.sub(r"([a-z])([A-Z])", r"\1_\2", str(k))
-            if isinstance(v, str) and _SENSITIVE_KEY_PATTERN.match(norm_k):
+            if isinstance(v, str) and is_sensitive_key_name(str(k)):
                 if not v.startswith("[REDACTED:"):
                     clean_dict[k] = f"[REDACTED:{k.lower()}]"
                     all_matches.append(SecretMatch(

@@ -154,18 +154,64 @@ class TestRedactPayloadAndBytes:
         assert clean["max_tokens"] == 2048
         assert len(matches) == 7
 
+    def test_claude_tokenized_edge_cases(self) -> None:
+        """Verify run-together words, aws_secret_access_key, pwd, and suffix variants are all redacted."""
+        payload = {
+            "dbpassword": "pass1",
+            "accesstoken": "token1",
+            "authtoken": "token2",
+            "refreshtoken": "token3",
+            "aws_secret_access_key": "raw_secret_key_val",
+            "password_hash": "hash_val_abc",
+            "client_secret_value": "secret_xyz",
+            "pwd": "simple_pwd_123",
+            # Safe non-secrets
+            "author": "Alice",
+            "authors": ["Alice", "Bob"],
+            "authority": "root",
+            "credit": 100,
+            "credits": 200,
+            "token_count": 50,
+            "token_usage": 1000,
+            "max_tokens": 4096,
+            "prompt_tokens": 256,
+        }
+        clean, matches = redact_payload(payload)
+        assert clean["dbpassword"] == "[REDACTED:dbpassword]"
+        assert clean["accesstoken"] == "[REDACTED:accesstoken]"
+        assert clean["authtoken"] == "[REDACTED:authtoken]"
+        assert clean["refreshtoken"] == "[REDACTED:refreshtoken]"
+        assert clean["aws_secret_access_key"] == "[REDACTED:aws_secret_access_key]"
+        assert clean["password_hash"] == "[REDACTED:password_hash]"
+        assert clean["client_secret_value"] == "[REDACTED:client_secret_value]"
+        assert clean["pwd"] == "[REDACTED:pwd]"
+
+        assert clean["author"] == "Alice"
+        assert clean["authors"] == ["Alice", "Bob"]
+        assert clean["authority"] == "root"
+        assert clean["credit"] == 100
+        assert clean["credits"] == 200
+        assert clean["token_count"] == 50
+        assert clean["token_usage"] == 1000
+        assert clean["max_tokens"] == 4096
+        assert clean["prompt_tokens"] == 256
+        assert len(matches) == 8
+
     def test_secret_fingerprint_uses_hmac_and_resists_rainbow_tables(self) -> None:
-        from agentblackbox.analysis.secret_detector import _secret_fingerprint
+        from agentblackbox.analysis.secret_detector import _secret_fingerprint, _get_or_create_secret_salt
         import hashlib
         short_secret = "admin"
-        # Standard unkeyed sha256 of 'admin'
         unkeyed_sha256 = hashlib.sha256(short_secret.encode()).hexdigest()[:8]
-        # HMAC fingerprint must NOT match unkeyed sha256
+        # Dynamic salt ensures HMAC fingerprint never matches unkeyed SHA256
         fp1 = _secret_fingerprint(short_secret)
         assert fp1 != unkeyed_sha256
         assert len(fp1) == 8
-        # Salt variation changes fingerprint
+        # Explicit salt alters fingerprint
         fp2 = _secret_fingerprint(short_secret, salt="custom-salt-xyz")
         assert fp2 != fp1
         assert len(fp2) == 8
+        # Salt generator returns non-empty random bytes without hardcoded constant
+        salt_bytes = _get_or_create_secret_salt()
+        assert len(salt_bytes) >= 16
+        assert salt_bytes != b"agentblackbox-audit-salt-v1"
 
