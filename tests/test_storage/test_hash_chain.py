@@ -1,6 +1,7 @@
 """Tests for tamper-evident hash chain, attribution columns, redaction, and migration."""
 
 import sqlite3
+import pytest
 from pathlib import Path
 
 from agentblackbox.storage.event_store import EventStore
@@ -245,14 +246,14 @@ class TestHashChainAndAttribution:
             conn.execute(
                 """INSERT INTO events (session_id, seq, timestamp, event_type,
                    severity, risk_score, source_path, payload, payload_hash,
-                   prev_hash, event_hash, agent_id, pid, parent_event_id,
+                   prev_hash, event_hash, hash_version, agent_id, pid, parent_event_id,
                    blob_hash, tags)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     e1.session_id, e1.seq, e1.timestamp, e1.event_type,
                     e1.severity, e1.risk_score, e1.source_path,
                     json.dumps(e1.payload), e1.payload_hash,
-                    e1.prev_hash, e1.event_hash,
+                    e1.prev_hash, e1.event_hash, 1,
                     e1.agent_id, e1.pid, e1.parent_event_id,
                     e1.blob_hash, json.dumps(e1.tags),
                 ),
@@ -276,6 +277,44 @@ class TestHashChainAndAttribution:
         res2 = store.verify_chain(sample_session.id)
         assert res2.valid is True
         assert res2.total_events == 2
+
+    def test_rejects_legacy_v1_for_new_inserts(self, store: EventStore, sample_session: Session) -> None:
+        """New event inserts must reject hash_version=1."""
+        store.create_session(sample_session)
+        with pytest.raises(ValueError, match="Legacy hash_version=1 is not permitted"):
+            store.insert_event(Event(
+                session_id=sample_session.id,
+                event_type=EventType.FILE_CREATE,
+                source_path="foo.py",
+                hash_version=1,
+            ))
+
+    def test_hmac_keyed_hash_chain_prevents_offline_forgery(self, tmp_path: Path) -> None:
+        """When ABB_HMAC_KEY is active, event hashes are cryptographic HMAC signatures."""
+        import os
+        db_path = tmp_path / "hmac_test.db"
+        store = EventStore(db_path)
+        sess = Session(workspace_path=str(tmp_path))
+        store.create_session(sess)
+
+        key = b"super-secret-audit-hmac-key-123456"
+        os.environ["ABB_HMAC_KEY"] = key.decode("utf-8")
+        try:
+            ev = store.insert_event(Event(
+                session_id=sess.id,
+                event_type=EventType.CMD_EXECUTE,
+                source_path="cmd.sh",
+            ))
+            # Verification with matching key passes
+            res = store.verify_chain(sess.id, hmac_key=key)
+            assert res.valid is True
+
+            # Verification with wrong key fails because hash is keyed HMAC
+            wrong_res = store.verify_chain(sess.id, hmac_key=b"wrong-key-000000000000")
+            assert wrong_res.valid is False
+            assert "event_hash mismatch" in (wrong_res.reason or "")
+        finally:
+            os.environ.pop("ABB_HMAC_KEY", None)
 
     def test_multiprocess_concurrent_inserts_valid_chain(
         self, tmp_path: Path

@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS events (
     payload_hash    TEXT,
     prev_hash       TEXT DEFAULT '',
     event_hash      TEXT DEFAULT '',
-    hash_version    INTEGER DEFAULT 1,
+    hash_version    INTEGER DEFAULT 2,
     agent_id        TEXT,
     pid             INTEGER,
     parent_event_id INTEGER,
@@ -274,6 +274,12 @@ class EventStore:
             event.risk_score = max(float(event.risk_score), 8.0)
             event.severity = Severity.CRITICAL
 
+        if getattr(event, "hash_version", 2) == 1:
+            raise ValueError(
+                "Legacy hash_version=1 is not permitted for new event inserts. "
+                "All new events must use canonical hash_version=2."
+            )
+        event.hash_version = 2
         event.seq = seq
         event.prev_hash = prev_hash
         event.event_hash = _compute_event_hash(event)
@@ -417,12 +423,18 @@ class EventStore:
                     (cnt, max_risks[sid], sid),
                 )
 
-    def verify_chain(self, session_id: str, verify_blobs: bool = True) -> ChainVerificationResult:
+    def verify_chain(
+        self,
+        session_id: str,
+        verify_blobs: bool = True,
+        hmac_key: Optional[bytes] = None,
+    ) -> ChainVerificationResult:
         """Verify sequence continuity, payload integrity, and hash-chain linkage.
 
         Args:
             session_id: Session ID to verify.
             verify_blobs: If True, re-hashes on-disk content blobs and fails if missing or tampered.
+            hmac_key: Optional HMAC key for HMAC-SHA256 chain verification.
 
         Returns:
             ChainVerificationResult indicating validity and failure reason if tampered.
@@ -467,7 +479,7 @@ class EventStore:
             if getattr(event, "hash_version", 2) == 1:
                 expected_event_hash = _compute_event_hash_v1(event)
             else:
-                expected_event_hash = _compute_event_hash(event)
+                expected_event_hash = _compute_event_hash(event, hmac_key=hmac_key)
 
             if event.event_hash != expected_event_hash:
                 return ChainVerificationResult(

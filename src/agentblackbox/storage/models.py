@@ -4,7 +4,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import List, Optional
 import hashlib
+import hmac
 import json
+import os
 import uuid
 
 
@@ -52,16 +54,20 @@ def _compute_event_hash_v1(event: "Event") -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def _compute_event_hash(event: "Event") -> str:
-    """Compute SHA256 hash chaining this event to its predecessor.
+def _compute_event_hash(event: "Event", hmac_key: Optional[bytes] = None) -> str:
+    """Compute SHA256 (or HMAC-SHA256) hash chaining this event to its predecessor.
 
     Canonical v2 hash covers sequence number, previous hash, session ID,
     timestamp, event type, payload hash, source path, attribution fields
     (agent_id, pid, parent_event_id), blob reference, severity, risk score,
     and sorted tags. Uses deterministic JSON with sorted keys and tight separators.
 
+    If ``hmac_key`` or environment variable ``ABB_HMAC_KEY`` is set, produces an
+    HMAC-SHA256 digest preventing recomputation attacks by agents with local DB access.
+
     Args:
         event: Event with ``seq``, ``prev_hash``, and ``payload_hash`` populated.
+        hmac_key: Optional bytes key for HMAC signing.
 
     Returns:
         Hex digest string.
@@ -84,6 +90,12 @@ def _compute_event_hash(event: "Event") -> str:
         "tags": sorted(event.tags) if event.tags else [],
     }
     raw = json.dumps(canonical, sort_keys=True, separators=(",", ":"), default=str)
+    if hmac_key is None:
+        key_env = os.environ.get("ABB_HMAC_KEY")
+        if key_env:
+            hmac_key = key_env.encode("utf-8")
+    if hmac_key:
+        return hmac.new(hmac_key, raw.encode("utf-8"), hashlib.sha256).hexdigest()
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 

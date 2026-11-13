@@ -12,7 +12,8 @@ from agentblackbox.analysis.secret_detector import (
 )
 
 _SENSITIVE_KEY_PATTERN = re.compile(
-    r"^(?:(?:api[_-]?|access[_-]?|auth[_-]?|bearer[_-]?|client[_-]?|refresh[_-]?|secret[_-]?|private[_-]?)?(?:password|passwd|passphrase|secret|api[_-]?key|private[_-]?key|authorization|credentials?)|(?:api[_-]?|access[_-]?|auth[_-]?|bearer[_-]?|refresh[_-]?|session[_-]?)?token)$",
+    r"^(?!.*(?:token_count|token_usage|token_limit|token_cost|tokens|author\b|credits?\b))"
+    r"(?:.*[_-])?(?:password|passwd|passphrase|secret(?:_key)?|api[_-]?key|private[_-]?key|authorization|credentials?|token)$",
     re.IGNORECASE,
 )
 
@@ -114,7 +115,8 @@ def redact_payload(obj: Any, source: str = "payload") -> Tuple[Any, List[SecretM
     if isinstance(obj, dict):
         clean_dict = {}
         for k, v in obj.items():
-            if isinstance(v, str) and _SENSITIVE_KEY_PATTERN.match(str(k)):
+            norm_k = re.sub(r"([a-z])([A-Z])", r"\1_\2", str(k))
+            if isinstance(v, str) and _SENSITIVE_KEY_PATTERN.match(norm_k):
                 if not v.startswith("[REDACTED:"):
                     clean_dict[k] = f"[REDACTED:{k.lower()}]"
                     all_matches.append(SecretMatch(

@@ -1,7 +1,9 @@
 """Detect secrets (API keys, tokens, passwords) in event payloads and file content."""
 
 import hashlib
+import hmac
 import math
+import os
 import re
 from dataclasses import dataclass
 from typing import List, Optional
@@ -44,9 +46,14 @@ _FALSE_POSITIVE_PATTERNS = [
 ]
 
 
-def _secret_fingerprint(raw: str) -> str:
-    """Deterministic 8-char hex fingerprint (SHA256) of secret without leaking content."""
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
+def _secret_fingerprint(raw: str, salt: Optional[str] = None) -> str:
+    """Deterministic 8-char HMAC-SHA256 fingerprint of secret without leaking content.
+
+    Prevents offline rainbow table / brute-force dictionary attacks on short secrets.
+    Uses configurable ABB_SECRET_SALT or default audit salt key.
+    """
+    key = (salt or os.environ.get("ABB_SECRET_SALT") or "agentblackbox-audit-salt-v1").encode("utf-8")
+    return hmac.new(key, raw.encode("utf-8"), hashlib.sha256).hexdigest()[:8]
 
 
 @dataclass

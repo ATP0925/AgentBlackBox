@@ -121,3 +121,51 @@ class TestRedactPayloadAndBytes:
         assert "AKIAIOSFODNN7EXAMPLE" not in decoded
         assert "[REDACTED:aws_access_key]" in decoded
 
+    def test_redacts_claude_reviewed_keys(self) -> None:
+        """Verify db_password, github_token, client_secret, and camelCase variants are redacted."""
+        payload = {
+            "db_password": "mypassword1",
+            "github_token": "ghp_mocktoken123",
+            "client_secret": "secretval456",
+            "dbPassword": "mypassword2",
+            "githubToken": "ghp_mocktoken789",
+            "clientSecret": "secretval012",
+            "aws_credentials": "creds_val",
+            "author": "Alice",
+            "authorId": 101,
+            "credit": 50,
+            "token_count": 100,
+            "max_tokens": 2048,
+        }
+        clean, matches = redact_payload(payload)
+        assert clean["db_password"] == "[REDACTED:db_password]"
+        assert clean["github_token"] == "[REDACTED:github_token]"
+        assert clean["client_secret"] == "[REDACTED:client_secret]"
+        assert clean["dbPassword"] == "[REDACTED:dbpassword]"
+        assert clean["githubToken"] == "[REDACTED:githubtoken]"
+        assert clean["clientSecret"] == "[REDACTED:clientsecret]"
+        assert clean["aws_credentials"] == "[REDACTED:aws_credentials]"
+
+        # Safe non-secret keys must NOT be redacted
+        assert clean["author"] == "Alice"
+        assert clean["authorId"] == 101
+        assert clean["credit"] == 50
+        assert clean["token_count"] == 100
+        assert clean["max_tokens"] == 2048
+        assert len(matches) == 7
+
+    def test_secret_fingerprint_uses_hmac_and_resists_rainbow_tables(self) -> None:
+        from agentblackbox.analysis.secret_detector import _secret_fingerprint
+        import hashlib
+        short_secret = "admin"
+        # Standard unkeyed sha256 of 'admin'
+        unkeyed_sha256 = hashlib.sha256(short_secret.encode()).hexdigest()[:8]
+        # HMAC fingerprint must NOT match unkeyed sha256
+        fp1 = _secret_fingerprint(short_secret)
+        assert fp1 != unkeyed_sha256
+        assert len(fp1) == 8
+        # Salt variation changes fingerprint
+        fp2 = _secret_fingerprint(short_secret, salt="custom-salt-xyz")
+        assert fp2 != fp1
+        assert len(fp2) == 8
+

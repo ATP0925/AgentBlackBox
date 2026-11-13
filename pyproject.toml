@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "abb-recorder"
-version = "0.2.0a1"
+version = "0.2.0a2"
 description = "The flight recorder for autonomous AI agents"
 readme = "README.md"
 license = "MIT"
