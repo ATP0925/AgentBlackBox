@@ -17,6 +17,9 @@ from rich.table import Table
 
 from agentblackbox import __version__
 from agentblackbox.collectors.ide_hooks import UniversalIDECollector
+from agentblackbox.context.diff_parser import parse_unified_diff
+from agentblackbox.core.config import ReviewConfig
+from agentblackbox.core.engine import ReviewEngine
 from agentblackbox.daemon.config import BlackBoxConfig
 from agentblackbox.daemon.core import (
     get_daemon_state,
@@ -24,6 +27,9 @@ from agentblackbox.daemon.core import (
     start_background_daemon,
     stop_background_daemon,
 )
+from agentblackbox.integrations.git_client import GitClient
+from agentblackbox.models.finding import Severity
+from agentblackbox.reporting.terminal import render_terminal_report
 from agentblackbox.storage.event_store import EventStore
 from agentblackbox.storage.models import Event, EventType, Session
 from agentblackbox.watchers.agent_hooks import install_claude_hook
@@ -42,7 +48,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 app = typer.Typer(
     name="abb",
-    help="AgentBlackBox -- The flight recorder for AI agents.",
+    help="AgentBlackBox -- AI-powered code analysis, automated code review, and flight recorder.",
     no_args_is_help=True,
 )
 console = Console()
@@ -578,6 +584,238 @@ def serve(
 
     console.print(f"[bold green]🚀 Starting AgentBlackBox API[/] on http://127.0.0.1:{port}")
     uvicorn.run("agentblackbox.api.main:app", host="127.0.0.1", port=port)
+
+
+@app.command()
+def review(
+    target: Optional[str] = typer.Argument(
+        None,
+        help="Git ref, commit range (e.g. HEAD~1..HEAD), branch, or omit for working tree changes",
+    ),
+    base: Optional[str] = typer.Option(
+        None,
+        "--base",
+        "-b",
+        help="Base branch/ref to compare against (e.g. main)",
+    ),
+    format: str = typer.Option(
+        "terminal",
+        "--format",
+        "-f",
+        help="Output format: terminal, markdown, json, sarif",
+    ),
+    output: Optional[Path] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Write report output directly to file path",
+    ),
+    min_severity: str = typer.Option(
+        "low",
+        "--min-severity",
+        "-s",
+        help="Minimum severity threshold: critical, high, medium, low, info",
+    ),
+    ai: Optional[str] = typer.Option(
+        None,
+        "--ai",
+        help="Enable AI reasoning layer: gemini, openai, anthropic, or offline",
+    ),
+    ai_model: Optional[str] = typer.Option(
+        None,
+        "--ai-model",
+        help="AI model name override",
+    ),
+    max_tokens: int = typer.Option(
+        8000,
+        "--max-tokens",
+        help="Maximum context token budget for AI reasoning",
+    ),
+    exit_zero: bool = typer.Option(
+        False,
+        "--exit-zero",
+        help="Always exit with 0 even if Critical or High severity findings are found",
+    ),
+    workspace: Optional[Path] = typer.Option(
+        None,
+        "--workspace",
+        "-w",
+        help="Repository workspace root path",
+    ),
+) -> None:
+    """Review code changes (PR diff, commit range, or unstaged working tree) using AI & static analysis."""
+    repo_root = workspace or Path.cwd()
+    git_client = GitClient(repo_root)
+
+    if not git_client.is_git_repository():
+        console.print(f"[bold red]Error:[/] '{repo_root}' is not a valid git repository.")
+        raise typer.Exit(1)
+
+    # Determine diff
+    if target:
+        if base:
+            raw_diff = git_client.get_branch_diff(base=base, head=target)
+        elif ".." in target:
+            parts = target.split("..", 1)
+            raw_diff = git_client.get_branch_diff(base=parts[0], head=parts[1])
+        else:
+            raw_diff = git_client.get_commit_diff(target)
+    else:
+        # Working tree changes
+        raw_diff = git_client.get_working_tree_diff(staged=False, untracked=True)
+        if not raw_diff.strip():
+            raw_diff = git_client.get_working_tree_diff(staged=True)
+
+    git_diff = parse_unified_diff(raw_diff)
+
+    sev = Severity.from_str(min_severity)
+    config = ReviewConfig(
+        min_severity=sev,
+        enable_ai=bool(ai),
+        ai_provider=ai,
+        ai_model=ai_model,
+        max_context_tokens=max_tokens,
+    )
+    engine = ReviewEngine(config=config, git_client=git_client)
+    report = engine.review_diff(git_diff, repo_root=repo_root)
+
+    # Handle output
+    fmt = format.lower()
+    if fmt == "terminal":
+        render_terminal_report(report, console=console)
+        if output:
+            output.write_text(report.to_markdown(), encoding="utf-8")
+            console.print(f"[dim]Report saved to {output}[/]")
+    elif fmt == "markdown":
+        md = report.to_markdown()
+        if output:
+            output.write_text(md, encoding="utf-8")
+            console.print(f"[dim]Report saved to {output}[/]")
+        else:
+            print(md)
+    elif fmt == "json":
+        data = json.dumps(report.to_dict(), indent=2)
+        if output:
+            output.write_text(data, encoding="utf-8")
+            console.print(f"[dim]Report saved to {output}[/]")
+        else:
+            print(data)
+    elif fmt == "sarif":
+        sarif_data = json.dumps(report.to_sarif(), indent=2)
+        if output:
+            output.write_text(sarif_data, encoding="utf-8")
+            console.print(f"[dim]SARIF report saved to {output}[/]")
+        else:
+            print(sarif_data)
+    else:
+        console.print(f"[bold red]Unknown format:[/] {format}. Use terminal, markdown, json, or sarif.")
+        raise typer.Exit(1)
+
+    if not exit_zero and report.has_critical_or_high:
+        raise typer.Exit(1)
+
+
+@app.command()
+def analyze(
+    path: Optional[Path] = typer.Argument(
+        None,
+        help="Path to repository directory or single source file to analyze",
+    ),
+    format: str = typer.Option(
+        "terminal",
+        "--format",
+        "-f",
+        help="Output format: terminal, markdown, json, sarif",
+    ),
+    output: Optional[Path] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Write report output directly to file path",
+    ),
+    min_severity: str = typer.Option(
+        "low",
+        "--min-severity",
+        "-s",
+        help="Minimum severity threshold: critical, high, medium, low, info",
+    ),
+    ai: Optional[str] = typer.Option(
+        None,
+        "--ai",
+        help="Enable AI reasoning layer: gemini, openai, anthropic, or offline",
+    ),
+    ai_model: Optional[str] = typer.Option(
+        None,
+        "--ai-model",
+        help="AI model name override",
+    ),
+    max_tokens: int = typer.Option(
+        8000,
+        "--max-tokens",
+        help="Maximum context token budget for AI reasoning",
+    ),
+    exit_zero: bool = typer.Option(
+        False,
+        "--exit-zero",
+        help="Always exit with 0 even if Critical or High severity findings are found",
+    ),
+) -> None:
+    """Analyze a repository or individual source file for security, bugs, performance, and code quality."""
+    target_path = path or Path.cwd()
+    target_path = target_path.resolve()
+
+    if not target_path.exists():
+        console.print(f"[bold red]Error:[/] Path '{target_path}' does not exist.")
+        raise typer.Exit(1)
+
+    sev = Severity.from_str(min_severity)
+    config = ReviewConfig(
+        min_severity=sev,
+        enable_ai=bool(ai),
+        ai_provider=ai,
+        ai_model=ai_model,
+        max_context_tokens=max_tokens,
+    )
+    engine = ReviewEngine(config=config)
+
+    if target_path.is_file():
+        report = engine.analyze_file(target_path)
+    else:
+        report = engine.analyze_repository(target_path)
+
+    fmt = format.lower()
+    if fmt == "terminal":
+        render_terminal_report(report, console=console)
+        if output:
+            output.write_text(report.to_markdown(), encoding="utf-8")
+            console.print(f"[dim]Report saved to {output}[/]")
+    elif fmt == "markdown":
+        md = report.to_markdown()
+        if output:
+            output.write_text(md, encoding="utf-8")
+            console.print(f"[dim]Report saved to {output}[/]")
+        else:
+            print(md)
+    elif fmt == "json":
+        data = json.dumps(report.to_dict(), indent=2)
+        if output:
+            output.write_text(data, encoding="utf-8")
+            console.print(f"[dim]Report saved to {output}[/]")
+        else:
+            print(data)
+    elif fmt == "sarif":
+        sarif_data = json.dumps(report.to_sarif(), indent=2)
+        if output:
+            output.write_text(sarif_data, encoding="utf-8")
+            console.print(f"[dim]SARIF report saved to {output}[/]")
+        else:
+            print(sarif_data)
+    else:
+        console.print(f"[bold red]Unknown format:[/] {format}. Use terminal, markdown, json, or sarif.")
+        raise typer.Exit(1)
+
+    if not exit_zero and report.has_critical_or_high:
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":
