@@ -74,15 +74,10 @@ def is_sensitive_key_name(key: str, value: Optional[str] = None) -> bool:
     pure = re.sub(r"[^a-zA-Z0-9]", "", k_lower)
 
     # 3. Check for password / pwd indicators anywhere
-    if _is_path_like_value(value):
-        # Value is clearly a filesystem path. Exempt PWD/pwd paths from password classification.
-        if any(t in {"password", "passwd", "passphrase"} for t in tokens):
-            return True
-    else:
-        if any(t in {"password", "passwd", "passphrase", "pwd"} for t in tokens):
-            return True
-        if any(pure.endswith(p) for p in ["password", "passwd", "passphrase", "pwd"]):
-            return True
+    if any(t in {"password", "passwd", "passphrase", "pwd"} for t in tokens):
+        return True
+    if any(pure.endswith(p) for p in ["password", "passwd", "passphrase", "pwd"]):
+        return True
 
     # 4. Check for secret indicators (client_secret, secret_key, client_secret_value)
     if "secret" in tokens or "secrets" in tokens or "clientsecret" in pure:

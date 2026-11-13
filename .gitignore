@@ -29,6 +29,9 @@ htmlcov/
 
 # AgentBlackBox runtime data
 .agentblackbox/
+.secret_salt
+*.tip
+checkpoints/
 *.db
 *.db-wal
 *.db-shm

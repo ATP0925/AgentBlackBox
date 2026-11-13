@@ -78,14 +78,12 @@ class TestWatcherBlobIntegration:
         finally:
             watcher.stop()
 
-        # Audited event behavior:
-        # On Linux inotify, write_text generates IN_CREATE followed by IN_MODIFY.
-        # Watcher debouncing (0.1s) coalesces events, resulting in bounded event counts
-        # (1 event if fully coalesced, at most 2 if CREATE and MODIFY are dispatched separately).
+        # Coalesced event behavior:
+        # File creation and immediate modification within the debounce window are coalesced
+        # into a single FILE_CREATE event capturing the redacted content and initial state.
         created = [e for e in events if e.event_type in (EventType.FILE_CREATE, EventType.FILE_MODIFY) and e.blob_hash]
-        assert 1 <= len(created) <= 2, f"Expected 1 or 2 bounded events, got {len(created)}"
-        # Content-addressing guarantee: all events for identical content share the same blob_hash
-        assert len({e.blob_hash for e in created}) == 1, "Duplicate blob hashes generated for same file content"
+        assert len(created) == 1, f"Expected exactly 1 coalesced event, got {len(created)}"
+        assert created[0].event_type == EventType.FILE_CREATE
 
         ev = created[0]
         assert ev.agent_id == "claude-code"

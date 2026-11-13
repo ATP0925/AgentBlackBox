@@ -33,12 +33,24 @@ def _hash_payload(payload: dict) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+def _derive_hmac_subkey(master_key: bytes, domain: bytes) -> bytes:
+    """Derive a domain-separated 32-byte subkey using HMAC-SHA256 to prevent cross-protocol key reuse.
+
+    Domains:
+    - b'abb-event-mac-v1': for event hash chains
+    - b'abb-session-meta-mac-v1': for sessions.meta_mac (is_keyed, v1_max_seq)
+    - b'abb-checkpoint-mac-v1': for external checkpoint tip signatures
+    """
+    return hmac.new(master_key, domain, hashlib.sha256).digest()
+
+
 def _compute_session_meta_mac(
     session_id: str, is_keyed: int, v1_max_seq: int, hmac_key: bytes
 ) -> str:
-    """Compute HMAC-SHA256 over critical session flags to prevent offline tampering in SQLite."""
+    """Compute HMAC-SHA256 over critical session flags using domain-separated subkey."""
+    meta_key = _derive_hmac_subkey(hmac_key, b"abb-session-meta-mac-v1")
     payload = f"{session_id}:{int(is_keyed)}:{int(v1_max_seq)}"
-    return hmac.new(hmac_key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.new(meta_key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def _compute_event_hash_v1(event: "Event") -> str:
@@ -103,7 +115,8 @@ def _compute_event_hash(event: "Event", hmac_key: Optional[bytes] = None) -> str
         if key_env:
             hmac_key = key_env.encode("utf-8")
     if hmac_key:
-        return hmac.new(hmac_key, raw.encode("utf-8"), hashlib.sha256).hexdigest()
+        event_key = _derive_hmac_subkey(hmac_key, b"abb-event-mac-v1")
+        return hmac.new(event_key, raw.encode("utf-8"), hashlib.sha256).hexdigest()
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 

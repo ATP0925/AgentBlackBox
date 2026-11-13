@@ -406,6 +406,7 @@ def verify(
     session_id: str = typer.Argument(..., help="Session ID to verify hash-chain integrity"),
     checkpoint: Optional[Path] = typer.Option(None, "--checkpoint", "-c", help="Path to checkpoint file for truncation check"),
     require_keyed: bool = typer.Option(False, "--require-keyed", help="Require session to be signed with HMAC key"),
+    require_checkpoint: bool = typer.Option(False, "--require-checkpoint", help="Require checkpoint file to exist and verify"),
     workspace: Optional[Path] = typer.Option(None, "--workspace", "-w"),
 ) -> None:
     """Verify tamper-evident hash chain for a session."""
@@ -416,7 +417,10 @@ def verify(
         raise typer.Exit(1)
 
     res = store.verify_chain(
-        session_id, checkpoint_path=checkpoint, require_keyed=require_keyed
+        session_id,
+        checkpoint_path=checkpoint,
+        require_keyed=require_keyed,
+        require_checkpoint=require_checkpoint,
     )
     if res.valid:
         note_str = f" [dim]({res.notes})[/]" if res.notes else ""

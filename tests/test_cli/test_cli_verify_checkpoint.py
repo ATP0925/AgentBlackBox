@@ -45,3 +45,13 @@ def test_cli_export_checkpoint_and_verify(tmp_path: Path) -> None:
     )
     assert res_verify.exit_code == 0
     assert "Chain INTACT" in res_verify.stdout
+
+    # Test verify with --require-checkpoint and missing checkpoint file
+    missing_cp = tmp_path / "nonexistent.tip"
+    res_missing = runner.invoke(
+        app,
+        ["verify", sess.id, "--checkpoint", str(missing_cp), "--require-checkpoint", "-w", str(tmp_path)],
+    )
+    assert res_missing.exit_code == 1
+    assert "BROKEN" in res_missing.stdout or "checkpoint required" in res_missing.stdout.lower()
+

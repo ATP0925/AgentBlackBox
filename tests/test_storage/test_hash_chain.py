@@ -726,6 +726,160 @@ class TestHashChainAndAttribution:
         assert res.valid is True
         assert res.total_events == num_procs * events_per_proc
 
+    def test_key_configured_unkeyed_session_fails_by_default(
+        self, tmp_path: Path
+    ) -> None:
+        """When an HMAC key is configured, verify_chain must enforce keyed hashes across all v2 rows by default."""
+        db_path = tmp_path / "keyed_enforce.db"
+        store = EventStore(db_path)
+        sess = Session(workspace_path=str(tmp_path))
+        store.create_session(sess)
+        # Insert without key
+        store.insert_event(Event(
+            session_id=sess.id,
+            event_type=EventType.CMD_EXECUTE,
+            payload={"cmd": "pwd"},
+        ))
+        # Plain verify passes
+        assert store.verify_chain(sess.id).valid is True
+
+        # Now configure key in environment or argument
+        key = b"verifier-secret-key-12345"
+        res = store.verify_chain(sess.id, hmac_key=key)
+        assert res.valid is False
+        assert "HMAC verification key is configured" in (res.reason or "") or "event_hash mismatch" in (res.reason or "")
+
+    def test_meta_mac_null_with_key_configured_fails(
+        self, tmp_path: Path
+    ) -> None:
+        """When HMAC key is configured, a NULL/missing meta_mac in SQLite must fail verification immediately."""
+        import os
+        db_path = tmp_path / "meta_mac_null.db"
+        key = b"session-meta-mac-secret-key"
+        os.environ["ABB_HMAC_KEY"] = key.decode("utf-8")
+        try:
+            store = EventStore(db_path)
+            sess = Session(workspace_path=str(tmp_path))
+            store.create_session(sess)
+            store.insert_event(Event(
+                session_id=sess.id,
+                event_type=EventType.CMD_EXECUTE,
+                payload={"cmd": "ls"},
+            ))
+            assert store.verify_chain(sess.id).valid is True
+
+            # Attacker wipes meta_mac to NULL in SQLite
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.execute("UPDATE sessions SET meta_mac = NULL WHERE id = ?", (sess.id,))
+                conn.commit()
+
+            res = store.verify_chain(sess.id)
+            assert res.valid is False
+            assert "missing meta_mac" in (res.reason or "").lower()
+        finally:
+            os.environ.pop("ABB_HMAC_KEY", None)
+
+    def test_event_mac_not_valid_as_checkpoint_mac(
+        self, tmp_path: Path
+    ) -> None:
+        """Subkeys must domain-separate event hashes from checkpoint signatures."""
+        import hashlib
+        import hmac
+        from agentblackbox.storage.models import _derive_hmac_subkey
+        master_key = b"master-key-32-bytes-long-secret"
+        event_key = _derive_hmac_subkey(master_key, b"abb-event-mac-v1")
+        cp_key = _derive_hmac_subkey(master_key, b"abb-checkpoint-mac-v1")
+        meta_key = _derive_hmac_subkey(master_key, b"abb-session-meta-mac-v1")
+
+        # Distinct keys
+        assert event_key != cp_key
+        assert cp_key != meta_key
+        assert event_key != meta_key
+
+        payload = b"canonical-test-payload-data"
+        event_mac = hmac.new(event_key, payload, hashlib.sha256).hexdigest()
+        cp_mac = hmac.new(cp_key, payload, hashlib.sha256).hexdigest()
+        assert event_mac != cp_mac
+
+    def test_checkpoint_written_every_n_events(
+        self, tmp_path: Path
+    ) -> None:
+        """EventStore automatically writes checkpoint every checkpoint_interval events."""
+        db_path = tmp_path / "periodic_cp.db"
+        # Set small checkpoint interval = 5
+        store = EventStore(db_path, checkpoint_interval=5)
+        sess = Session(workspace_path=str(tmp_path))
+        store.create_session(sess)
+        cp_file = store.db_path.parent / "checkpoints" / f"{sess.id}.tip"
+
+        for i in range(4):
+            store.insert_event(Event(
+                session_id=sess.id,
+                event_type=EventType.CMD_EXECUTE,
+                payload={"step": i},
+            ))
+        # After 4 events, no checkpoint yet
+        assert not cp_file.exists()
+
+        # 5th event triggers checkpoint!
+        store.insert_event(Event(
+            session_id=sess.id,
+            event_type=EventType.CMD_EXECUTE,
+            payload={"step": 4},
+        ))
+        assert cp_file.exists()
+        data = json.loads(cp_file.read_text(encoding="utf-8"))
+        assert data["last_seq"] == 5
+
+    def test_require_checkpoint_fails_when_missing(
+        self, store: EventStore, sample_session: Session
+    ) -> None:
+        """require_checkpoint=True must fail if checkpoint file does not exist."""
+        store.create_session(sample_session)
+        store.insert_event(Event(
+            session_id=sample_session.id,
+            event_type=EventType.CMD_EXECUTE,
+            payload={"cmd": "whoami"},
+        ))
+        res = store.verify_chain(
+            sample_session.id,
+            checkpoint_path=Path("nonexistent/checkpoint.tip"),
+            require_checkpoint=True,
+        )
+        assert res.valid is False
+        assert "checkpoint required" in (res.reason or "").lower()
+
+    def test_truncation_after_kill_detected_up_to_last_checkpoint(
+        self, tmp_path: Path
+    ) -> None:
+        """When an agent process is killed, periodic checkpoint preserves evidence of events prior to crash."""
+        db_path = tmp_path / "kill_trunc.db"
+        store = EventStore(db_path, checkpoint_interval=5)
+        sess = Session(workspace_path=str(tmp_path))
+        store.create_session(sess)
+
+        for i in range(6):
+            store.insert_event(Event(
+                session_id=sess.id,
+                event_type=EventType.CMD_EXECUTE,
+                payload={"step": i},
+            ))
+
+        # Checkpoint recorded seq=5
+        cp_file = store.db_path.parent / "checkpoints" / f"{sess.id}.tip"
+        assert cp_file.exists()
+
+        # Attacker truncates DB to seq=3 (as if process was killed earlier)
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute("DELETE FROM events WHERE seq > 3")
+            conn.commit()
+
+        # Verification with checkpoint catches that events up to 5 existed
+        res = store.verify_chain(sess.id, checkpoint_path=cp_file)
+        assert res.valid is False
+        assert "Tail truncation detected" in (res.reason or "")
+        assert "5 events" in (res.reason or "")
+
 
 
 

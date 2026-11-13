@@ -20,6 +20,7 @@ from agentblackbox.storage.models import (
     _compute_event_hash,
     _compute_event_hash_v1,
     _compute_session_meta_mac,
+    _derive_hmac_subkey,
     _hash_payload,
     _utcnow,
 )
@@ -125,10 +126,16 @@ class EventStore:
         db_path: Path to SQLite database file. Parent dirs are auto-created.
     """
 
-    def __init__(self, db_path: Path, blobs_dir: Optional[Path] = None) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        blobs_dir: Optional[Path] = None,
+        checkpoint_interval: int = 50,
+    ) -> None:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.blobs_dir = blobs_dir or (self.db_path.parent / "blobs")
+        self.checkpoint_interval = checkpoint_interval
         from agentblackbox.storage.blob_store import BlobStore
         self.blob_store = BlobStore(self.blobs_dir)
         self._init_db()
@@ -421,6 +428,11 @@ class EventStore:
                                is_keyed = MAX(is_keyed, ?) WHERE id = ?""",
                             (event.risk_score, keyed_flag, event.session_id),
                         )
+                if event.seq > 0 and (event.seq % self.checkpoint_interval == 0):
+                    try:
+                        self.checkpoint_chain_tip(event.session_id)
+                    except Exception as e:
+                        logger.warning("periodic_checkpoint_warning", session_id=event.session_id, seq=event.seq, error=str(e))
                 return event
             except (sqlite3.OperationalError, sqlite3.IntegrityError) as e:
                 last_err = e
@@ -504,6 +516,14 @@ class EventStore:
                         (cnt, max_risks[sid], keyed_flag, sid),
                     )
 
+            for sid, tip_tuple in tips.items():
+                tip_seq, _ = tip_tuple
+                if tip_seq > 0 and (tip_seq % self.checkpoint_interval == 0):
+                    try:
+                        self.checkpoint_chain_tip(sid)
+                    except Exception as e:
+                        logger.warning("periodic_checkpoint_warning", session_id=sid, seq=tip_seq, error=str(e))
+
     def checkpoint_chain_tip(
         self,
         session_id: str,
@@ -544,8 +564,9 @@ class EventStore:
         if active_key:
             import hmac
             import hashlib
+            cp_key = _derive_hmac_subkey(active_key, b"abb-checkpoint-mac-v1")
             payload = f"{session_id}:{last_seq}:{head_hash}:{ts}"
-            sig = hmac.new(active_key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+            sig = hmac.new(cp_key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
         data = {
             "session_id": session_id,
@@ -569,6 +590,7 @@ class EventStore:
         hmac_key: Optional[bytes] = None,
         checkpoint_path: Optional[Path] = None,
         require_keyed: bool = False,
+        require_checkpoint: bool = False,
     ) -> ChainVerificationResult:
         """Verify sequence continuity, payload integrity, and hash-chain linkage.
 
@@ -579,6 +601,7 @@ class EventStore:
             checkpoint_path: Optional path to external tip checkpoint file. Defaults to
                 checking ``<db_parent>/checkpoints/<session_id>.tip`` if it exists.
             require_keyed: If True, fails verification if session was recorded without HMAC key.
+            require_checkpoint: If True, fails verification if checkpoint file is missing.
 
         Returns:
             ChainVerificationResult indicating validity and failure reason if tampered.
@@ -633,6 +656,23 @@ class EventStore:
 
         if active_key:
             import hmac
+            is_pure_legacy = (
+                v1_cutoff_seq > 0
+                and all(
+                    r["seq"] is not None
+                    and int(r["seq"]) <= v1_cutoff_seq
+                    and (r["hash_version"] == 1 if "hash_version" in r.keys() else False)
+                    for r in rows
+                )
+            )
+            if not stored_meta_mac and not is_pure_legacy and len(rows) > 0:
+                return ChainVerificationResult(
+                    session_id=session_id,
+                    valid=False,
+                    total_events=len(rows),
+                    broken_at_seq=1,
+                    reason="Session metadata tampering detected: missing meta_mac on session while HMAC verification key is configured",
+                )
             if stored_meta_mac:
                 expected_meta_mac = _compute_session_meta_mac(
                     session_id, 1 if is_keyed else 0, v1_cutoff_seq, active_key
@@ -645,14 +685,6 @@ class EventStore:
                         broken_at_seq=1,
                         reason="Session metadata tampering detected: meta_mac mismatch on (is_keyed, v1_max_seq)",
                     )
-            elif is_keyed and len(rows) > 0:
-                return ChainVerificationResult(
-                    session_id=session_id,
-                    valid=False,
-                    total_events=len(rows),
-                    broken_at_seq=1,
-                    reason="Session metadata tampering detected: missing meta_mac on keyed session",
-                )
 
         expected_prev = "GENESIS"
         for idx, row in enumerate(rows, start=1):
@@ -725,8 +757,9 @@ class EventStore:
                 if active_key and cp.get("signature"):
                     import hmac
                     import hashlib
+                    cp_key = _derive_hmac_subkey(active_key, b"abb-checkpoint-mac-v1")
                     payload = f"{session_id}:{cp.get('last_seq')}:{cp.get('head_hash')}:{cp.get('event_time')}"
-                    expected_sig = hmac.new(active_key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+                    expected_sig = hmac.new(cp_key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
                     if not hmac.compare_digest(cp["signature"], expected_sig):
                         return ChainVerificationResult(
                             session_id=session_id,
@@ -757,6 +790,14 @@ class EventStore:
                 logger.warning("checkpoint_read_error", error=str(e))
                 checkpoint_notes = f"checkpoint read error: {e}"
         else:
+            if require_checkpoint:
+                return ChainVerificationResult(
+                    session_id=session_id,
+                    valid=False,
+                    total_events=len(rows),
+                    broken_at_seq=len(rows),
+                    reason="Verification policy failure: checkpoint required but no checkpoint file found",
+                )
             checkpoint_notes = "truncation check not performed, no checkpoint"
 
         return ChainVerificationResult(

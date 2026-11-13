@@ -1,7 +1,8 @@
 """Tests for secret redaction (redact-first-store-later)."""
 
 from pathlib import Path
-from agentblackbox.analysis.redactor import redact_bytes, redact_payload, redact_text
+import pytest
+from agentblackbox.analysis.redactor import is_sensitive_key_name, redact_bytes, redact_payload, redact_text
 
 
 class TestRedactText:
@@ -226,12 +227,12 @@ class TestRedactPayloadAndBytes:
             "pwd_secret": "plainPassword456!",
         }
         clean, matches = redact_payload(payload)
-        # Working directories must remain untouched
+        # Exact PWD/pwd with paths must remain untouched
         assert clean["PWD"] == "/home/user/workspace/AgentBlackBox"
         assert clean["pwd"] == "C:\\Users\\alice\\AppData\\Local\\project"
-        assert clean["working_pwd"] == "/var/log/app"
 
-        # Non-path credentials with pwd in name must be redacted
+        # Non-exact keys or non-path credentials with pwd in name must be redacted
+        assert clean["working_pwd"] == "[REDACTED:working_pwd]"
         assert clean["secret_pwd"] == "[REDACTED:secret_pwd]"
         assert clean["pwd_secret"] == "[REDACTED:pwd_secret]"
 
@@ -294,4 +295,54 @@ class TestRedactPayloadAndBytes:
         for py_file in src_dir.rglob("*.py"):
             content = py_file.read_text(encoding="utf-8")
             assert "agentblackbox-audit-salt" not in content, f"Hardcoded salt string found in {py_file}"
+
+    @pytest.mark.parametrize(
+        "key,value,expected_sensitive",
+        [
+            ("password", "/home/x/secret", True),
+            ("db_password", "C:\\x", True),
+            ("pwd", "hunter2", True),
+            ("PWD", "/home/user/proj", False),
+            ("PWD", "C:\\Users\\x\\proj", False),
+            ("pwd", "/home/user/proj", False),
+        ],
+    )
+    def test_pwd_exact_path_exemption_parametrized(
+        self, key: str, value: str, expected_sensitive: bool
+    ) -> None:
+        """Only exact key pwd / PWD with path-like value is exempt; other password keys or non-path pwd are redacted."""
+        is_sens = is_sensitive_key_name(key, value)
+        assert is_sens == expected_sensitive, f"is_sensitive_key_name({key!r}, {value!r}) expected {expected_sensitive}"
+
+        clean, matches = redact_payload({key: value})
+        if expected_sensitive:
+            assert clean[key] == f"[REDACTED:{key.lower()}]"
+            assert len(matches) == 1
+        else:
+            assert clean[key] == value
+            assert len(matches) == 0
+
+    def test_fingerprint_differs_across_installs_for_same_secret(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Secret fingerprints must differ across installs (distinct HOME directories) for identical secret text."""
+        import agentblackbox.analysis.secret_detector as sd
+
+        secret = "my-super-secret-api-token-123456"
+
+        home1 = tmp_path / "install1"
+        home1.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home1)
+        monkeypatch.setattr(sd, "_CACHED_SALT", None)
+        monkeypatch.delenv("ABB_SECRET_SALT", raising=False)
+        fp1 = sd._secret_fingerprint(secret)
+
+        home2 = tmp_path / "install2"
+        home2.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home2)
+        monkeypatch.setattr(sd, "_CACHED_SALT", None)
+        monkeypatch.delenv("ABB_SECRET_SALT", raising=False)
+        fp2 = sd._secret_fingerprint(secret)
+
+        assert fp1 != fp2, f"Fingerprints should differ across installs, but both got {fp1}"
 

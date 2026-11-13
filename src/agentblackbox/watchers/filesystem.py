@@ -95,10 +95,13 @@ class _DebouncedHandler(FileSystemEventHandler):
         self.blob_store = blob_store
         self.agent_id = agent_id
         self._timers: Dict[str, Timer] = {}
+        self._pending_types: Dict[str, str] = {}
         self._last_hashes: Dict[str, str] = {}
 
-    def _debounced_emit(self, path: str, event_type: str) -> None:
+    def _debounced_emit(self, path: str) -> None:
         """Emit an event after debounce period, saving a redacted blob snapshot."""
+        event_type = self._pending_types.pop(path, EventType.FILE_MODIFY)
+        self._timers.pop(path, None)
         file_path = Path(path)
 
         # Skip directories
@@ -112,11 +115,15 @@ class _DebouncedHandler(FileSystemEventHandler):
         except OSError:
             return
 
-        # Content hash dedup for modifications
-        if event_type == EventType.FILE_MODIFY and file_path.exists():
+        if event_type == EventType.FILE_DELETE:
+            self._last_hashes.pop(path, None)
+
+        # Content hash dedup for modifications and record hash on creates
+        if file_path.exists():
             current_hash = _file_hash(file_path)
-            if current_hash and current_hash == self._last_hashes.get(path):
-                return  # File content didn't actually change
+            if event_type == EventType.FILE_MODIFY:
+                if current_hash and current_hash == self._last_hashes.get(path):
+                    return  # File content didn't actually change
             if current_hash:
                 self._last_hashes[path] = current_hash
 
@@ -164,14 +171,20 @@ class _DebouncedHandler(FileSystemEventHandler):
         self.on_event(event)
 
     def _schedule(self, path: str, event_type: str) -> None:
-        """Schedule a debounced event emission."""
-        key = f"{path}:{event_type}"
-        if key in self._timers:
-            self._timers[key].cancel()
-        timer = Timer(self.debounce_seconds, self._debounced_emit, args=[path, event_type])
+        """Schedule a debounced event emission, coalescing create and modify per path."""
+        # If create is already pending and a modify event arrives during debounce window,
+        # preserve FILE_CREATE so it accurately reflects initial creation with full payload.
+        if path in self._pending_types:
+            prev_type = self._pending_types[path]
+            if prev_type == EventType.FILE_CREATE and event_type == EventType.FILE_MODIFY:
+                event_type = EventType.FILE_CREATE
+        if path in self._timers:
+            self._timers[path].cancel()
+        self._pending_types[path] = event_type
+        timer = Timer(self.debounce_seconds, self._debounced_emit, args=[path])
         timer.daemon = True
         timer.start()
-        self._timers[key] = timer
+        self._timers[path] = timer
 
     def on_created(self, event: FileCreatedEvent) -> None:
         """Handle file creation."""
@@ -205,6 +218,7 @@ class _DebouncedHandler(FileSystemEventHandler):
         for timer in self._timers.values():
             timer.cancel()
         self._timers.clear()
+        self._pending_types.clear()
 
 
 class FileSystemWatcher(BaseWatcher):

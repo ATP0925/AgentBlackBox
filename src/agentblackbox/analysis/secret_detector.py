@@ -6,6 +6,7 @@ import math
 import os
 import re
 import secrets
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
@@ -81,10 +82,24 @@ def _get_or_create_secret_salt(salt_override: Optional[str] = None) -> bytes:
         salt_path.parent.mkdir(parents=True, exist_ok=True)
         new_salt = secrets.token_hex(32)
         salt_path.write_text(new_salt, encoding="utf-8")
-        try:
-            salt_path.chmod(0o600)
-        except (OSError, NotImplementedError):
-            pass  # Windows or restricted ACL filesystem
+        if sys.platform == "win32":
+            try:
+                import subprocess
+                user = os.environ.get("USERNAME")
+                if user:
+                    subprocess.run(
+                        ["icacls", str(salt_path), "/inheritance:r", "/grant:r", f"{user}:(R,W)"],
+                        capture_output=True,
+                        check=False,
+                        timeout=2,
+                    )
+            except Exception:
+                pass
+        else:
+            try:
+                salt_path.chmod(0o600)
+            except (OSError, NotImplementedError):
+                pass
         _CACHED_SALT = new_salt
         return new_salt.encode("utf-8")
     except Exception:
@@ -161,6 +176,17 @@ def _is_false_positive(text: str) -> bool:
     Returns:
         True if this is likely a placeholder, not a real secret.
     """
+    # Exact pwd/PWD with a path-like value is working directory, not password
+    pwd_m = re.match(r"^(?:pwd)\s*[:=]\s*['\"]?(\S+?)['\"]?$", text, re.IGNORECASE)
+    if pwd_m:
+        val = pwd_m.group(1).strip("'\"")
+        if (
+            val.startswith(("/", "\\", "~"))
+            or bool(re.match(r"^[A-Za-z]:[/\\]", val))
+            or (("/" in val or "\\" in val) and "://" not in val)
+        ):
+            return True
+
     for pattern in _FALSE_POSITIVE_PATTERNS:
         if pattern.search(text):
             return True
