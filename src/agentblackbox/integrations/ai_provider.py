@@ -224,3 +224,4 @@ def get_ai_provider(
             return OfflineMockAIProvider()
 
     return OfflineMockAIProvider()
+

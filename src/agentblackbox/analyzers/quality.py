@@ -88,3 +88,4 @@ class QualityAnalyzer(BaseAnalyzer):
                         )
 
         return findings
+

@@ -126,3 +126,4 @@ class BugAnalyzer(BaseAnalyzer):
                 continue
 
         return findings
+

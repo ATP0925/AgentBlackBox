@@ -15,3 +15,4 @@ def test_git_client_repo_detection(tmp_path: Path) -> None:
     # Can query without throwing
     diff = client.get_full_diff()
     assert isinstance(diff, str)
+

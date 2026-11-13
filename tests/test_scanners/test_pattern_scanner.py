@@ -21,3 +21,4 @@ def test_pattern_scanner_detects_mktemp_and_chmod() -> None:
     rule_ids = {f.rule_id for f in findings}
     assert "SEC-005" in rule_ids  # chmod 777
     assert "SEC-006" in rule_ids  # tempfile.mktemp
+

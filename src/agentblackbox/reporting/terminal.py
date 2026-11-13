@@ -99,3 +99,4 @@ def render_terminal_report(report: ReviewReport, console: Optional[Console] = No
         console.print(Panel("[bold red]✗ REVIEW FAILED: Critical or High severity findings detected. Please resolve these before merging.[/]", border_style="red"))
     else:
         console.print(Panel("[bold green]✓ REVIEW PASSED: No Critical or High issues found. Minor suggestions can be reviewed at discretion.[/]", border_style="green"))
+

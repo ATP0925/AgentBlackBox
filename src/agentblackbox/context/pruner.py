@@ -93,3 +93,4 @@ class ContextPruner:
             budget -= _estimate_tokens(dep_stub)
 
         return "\n".join(sections)
+

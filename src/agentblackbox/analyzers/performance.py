@@ -97,3 +97,4 @@ class PerformanceAnalyzer(BaseAnalyzer):
                 continue
 
         return findings
+

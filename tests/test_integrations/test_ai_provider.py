@@ -92,3 +92,4 @@ def test_offline_mock_provider() -> None:
     assert len(findings) == 1
     assert findings[0].severity == Severity.CRITICAL
     assert findings[0].file_path == "src/target.py"
+

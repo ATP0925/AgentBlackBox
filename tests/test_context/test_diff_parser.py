@@ -74,3 +74,4 @@ Binary files a/logo.png and b/logo.png differ
     diff = parse_unified_diff(raw)
     assert len(diff.files) == 1
     assert diff.files[0].is_binary is True
+

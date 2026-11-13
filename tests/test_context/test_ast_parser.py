@@ -82,3 +82,4 @@ def test_parse_empty_source() -> None:
     ctx = parse_python_source("", file_path="empty.py")
     assert ctx.lines_of_code == 0
     assert len(ctx.symbols) == 0
+

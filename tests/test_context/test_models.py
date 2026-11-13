@@ -83,3 +83,4 @@ def test_review_report_markdown_and_sarif() -> None:
     assert results[0]["level"] == "error"
     assert results[1]["ruleId"] == "QUAL-002"
     assert results[1]["level"] == "note"
+

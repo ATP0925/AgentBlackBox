@@ -260,3 +260,4 @@ def parse_python_source(code: str, file_path: str = "") -> FileContext:
         cyclomatic_complexity=file_complexity,
         raw_source=code,
     )
+

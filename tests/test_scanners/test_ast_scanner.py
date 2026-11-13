@@ -61,3 +61,4 @@ def test_ast_scanner_catches_all_patterns() -> None:
     # Check that critical/high severities are assigned
     critical_findings = [f for f in findings if f.severity == Severity.CRITICAL]
     assert len(critical_findings) >= 2  # SEC-001, SEC-002
+

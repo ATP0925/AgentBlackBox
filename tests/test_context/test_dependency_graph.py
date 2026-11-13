@@ -49,3 +49,4 @@ def test_dependency_graph_indexing_and_impact() -> None:
     code_ctx = graph.build_code_context(["src/utils.py"])
     assert "src/utils.py" in code_ctx.target_files
     assert "src/service.py" in code_ctx.files
+

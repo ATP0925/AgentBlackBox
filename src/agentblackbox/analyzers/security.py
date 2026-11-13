@@ -55,3 +55,4 @@ class SecurityAnalyzer(BaseAnalyzer):
                     findings.append(f)
 
         return findings
+

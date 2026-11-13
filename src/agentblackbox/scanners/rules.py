@@ -116,3 +116,4 @@ BUILTIN_RULES: Dict[str, Rule] = {
         suggested_fix="Use `await asyncio.sleep(...)` instead of `time.sleep(...)`.",
     ),
 }
+

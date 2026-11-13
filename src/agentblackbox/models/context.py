@@ -73,3 +73,4 @@ class CodeContext:
     def get_context_slice(self, file_path: str) -> Optional[FileContext]:
         """Retrieve FileContext for a specific file path."""
         return self.files.get(file_path)
+

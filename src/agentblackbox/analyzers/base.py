@@ -33,3 +33,4 @@ class BaseAnalyzer(ABC):
             List of prioritized Finding instances.
         """
         ...
+

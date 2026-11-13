@@ -100,3 +100,4 @@ def test_duplication_analyzer() -> None:
 
     assert len(findings) >= 1
     assert any(f.rule_id == "DUPL-001" for f in findings)
+

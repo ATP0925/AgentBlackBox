@@ -43,3 +43,4 @@ def test_context_pruner_token_budgeting() -> None:
     assert "PULL REQUEST / GIT DIFF" in context_str
     assert "src/target.py" in context_str
     assert _estimate_tokens(context_str) <= 500
+

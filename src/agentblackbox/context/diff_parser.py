@@ -180,3 +180,4 @@ def parse_unified_diff(raw_diff: str) -> GitDiff:
         files.append(current_file)
 
     return GitDiff(files=files, raw_diff=raw_diff)
+

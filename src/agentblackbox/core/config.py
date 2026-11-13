@@ -36,3 +36,4 @@ class ReviewConfig:
     rule_filters: List[str] = field(default_factory=list)
     ignore_paths: List[str] = field(default_factory=lambda: list(DEFAULT_IGNORE_PATTERNS))
     fail_on_severity: Optional[Severity] = Severity.HIGH  # Return non-zero exit code if this or higher exists
+
