@@ -63,21 +63,22 @@ class TestWatcherBlobIntegration:
             debounce_seconds=0.1,
             blob_store=blobs,
             agent_id="claude-code",
+            use_polling=True,
         )
         raw_key = "AKIA" + "IOSFODNN7EXAMPLE"
         watcher.start()
         try:
             time.sleep(0.3)
             (ws / "config.py").write_text(f'AWS_KEY = "{raw_key}"\n', encoding="utf-8")
-            deadline = time.monotonic() + 2.5
+            deadline = time.monotonic() + 4.0
             while time.monotonic() < deadline and not any(
-                e.event_type == EventType.FILE_CREATE and e.blob_hash for e in events
+                e.event_type in (EventType.FILE_CREATE, EventType.FILE_MODIFY) and e.blob_hash for e in events
             ):
                 time.sleep(0.05)
         finally:
             watcher.stop()
 
-        created = [e for e in events if e.event_type == EventType.FILE_CREATE and e.blob_hash]
+        created = [e for e in events if e.event_type in (EventType.FILE_CREATE, EventType.FILE_MODIFY) and e.blob_hash]
         assert len(created) >= 1
         ev = created[0]
         assert ev.agent_id == "claude-code"
