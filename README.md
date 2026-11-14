@@ -47,25 +47,76 @@ AgentBlackBox protects your codebase across two phases of autonomous AI coding (
 
 ## 🚀 Quickstart
 
+### Prerequisites
+- **Python**: 3.10+ (`python --version` or `py --version`)
+- **Git**: (`git --version`) — On Windows, install via `winget install --id Git.Git -e --source winget`
+
+---
+
+### Windows (PowerShell)
+
+```powershell
+# 1. Clone repository (or download ZIP if Git is not installed)
+git clone https://github.com/ATP0925/AgentBlackBox.git
+cd AgentBlackBox
+
+# 2. Install package and dependencies (use python -m to avoid Windows binary execution policies)
+python -m pip install -e ".[dev]"
+
+# 3. Review current uncommitted git changes (working tree)
+abb review
+# Note: If 'abb' is not in PATH yet, run: python -m agentblackbox.cli.main review
+
+# 4. Review a pull request or branch diff against main
+abb review feature-branch --base main --format markdown
+
+# 5. Export SARIF 2.1.0 report for GitHub Advanced Security
+abb review --format sarif --output results.sarif
+
+# 6. Analyze an entire repository for bugs, security risks, and duplication
+abb analyze . --min-severity medium
+
+# 7. Enable AI reasoning layer (Claude, Codex, Gemini, or Offline)
+$env:GEMINI_API_KEY="your-api-key"
+abb review --ai gemini
+
+# Or with OpenAI Codex / Anthropic Claude:
+# $env:OPENAI_API_KEY="your-api-key"; abb review --ai codex
+# $env:ANTHROPIC_API_KEY="your-api-key"; abb review --ai claude
+```
+
+> **Tip for brand new Windows PCs without Git:**
+> Run in PowerShell:
+> ```powershell
+> Invoke-WebRequest -Uri "https://github.com/ATP0925/AgentBlackBox/archive/refs/heads/main.zip" -OutFile "AgentBlackBox.zip"
+> Expand-Archive -Path "AgentBlackBox.zip" -DestinationPath "."
+> cd AgentBlackBox-main
+> python -m pip install -e ".[dev]"
+> ```
+
+---
+
+### Linux & macOS (Bash / Zsh)
+
 ```bash
-# Clone and install
+# 1. Clone and install
 git clone https://github.com/ATP0925/AgentBlackBox.git
 cd AgentBlackBox
 pip install -e ".[dev]"
 
-# 1. Review current uncommitted git changes (working tree)
+# 2. Review current uncommitted git changes (working tree)
 abb review
 
-# 2. Review a pull request or branch diff against main
+# 3. Review a pull request or branch diff against main
 abb review feature-branch --base main --format markdown
 
-# 3. Export SARIF 2.1.0 report for GitHub Advanced Security
+# 4. Export SARIF 2.1.0 report for GitHub Advanced Security
 abb review --format sarif --output results.sarif
 
-# 4. Analyze an entire repository for bugs, security risks, and duplication
+# 5. Analyze an entire repository for bugs, security risks, and duplication
 abb analyze . --min-severity medium
 
-# 5. Enable AI reasoning layer with Gemini or OpenAI
+# 6. Enable AI reasoning layer with Gemini, Codex, or Claude
 export GEMINI_API_KEY="your-api-key"
 abb review --ai gemini
 ```
