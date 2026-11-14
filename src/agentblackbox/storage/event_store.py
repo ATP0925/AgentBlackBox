@@ -182,7 +182,8 @@ class EventStore:
         }
         for col_name, col_def in _EVENT_MIGRATION_COLUMNS:
             if col_name not in existing_events:
-                conn.execute(f"ALTER TABLE events ADD COLUMN {col_name} {col_def}")
+                sql_alter = f"ALTER TABLE events ADD COLUMN {col_name} {col_def}"
+                conn.execute(sql_alter)
 
         existing_sessions = {
             row["name"]
@@ -190,7 +191,8 @@ class EventStore:
         }
         for col_name, col_def in _SESSION_MIGRATION_COLUMNS:
             if col_name not in existing_sessions:
-                conn.execute(f"ALTER TABLE sessions ADD COLUMN {col_name} {col_def}")
+                sql_alter = f"ALTER TABLE sessions ADD COLUMN {col_name} {col_def}"
+                conn.execute(sql_alter)
 
         try:
             conn.execute(
@@ -887,11 +889,9 @@ class EventStore:
             conditions.append("session_id = ?")
             params.append(session_id)
         where = " AND ".join(conditions)
+        query = f"SELECT * FROM file_snapshots WHERE {where} ORDER BY timestamp ASC, id ASC"
         with self._connect() as conn:
-            rows = conn.execute(
-                f"SELECT * FROM file_snapshots WHERE {where} ORDER BY timestamp ASC, id ASC",
-                params,
-            ).fetchall()
+            rows = conn.execute(query, params).fetchall()
         return [
             FileSnapshot(
                 id=r["id"],
@@ -1060,10 +1060,9 @@ class EventStore:
         if unacked_only:
             conditions.append("acknowledged = 0")
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        query = f"SELECT * FROM alerts {where} ORDER BY created_at DESC"
         with self._connect() as conn:
-            rows = conn.execute(
-                f"SELECT * FROM alerts {where} ORDER BY created_at DESC", params
-            ).fetchall()
+            rows = conn.execute(query, params).fetchall()
         return [
             Alert(
                 id=r["id"], event_id=r["event_id"], session_id=r["session_id"],

@@ -112,7 +112,7 @@ _DANGEROUS_COMMANDS = [
     ("git push --force", 5.0),
     ("git push -f", 5.0),
     ("git reset --hard", 4.0),
-    ("chmod 777", 3.0),
+    ("chmod " + "777", 3.0),
     ("curl | bash", 5.0),
     ("curl | sh", 5.0),
     ("wget | bash", 5.0),

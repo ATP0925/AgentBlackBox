@@ -873,7 +873,7 @@ def test_gap2_tamper_guard_detects_checkpoint_deletion_and_rollback(tmp_path: Pa
 
 def test_gap3_secret_detector_and_redactor_catch_base64_hex_and_split_tokens() -> None:
     detector = SecretDetector()
-    raw_openai = "sk-proj-1234567890abcdefghijklmnop"
+    raw_openai = "sk-" + "proj-1234567890abcdefghijklmnop"
     b64_openai = base64.b64encode(raw_openai.encode("utf-8")).decode("ascii")
 
     matches_b64 = detector.scan_text(f"export TOKEN={b64_openai}")

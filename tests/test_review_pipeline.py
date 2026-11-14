@@ -154,3 +154,42 @@ def test_cli_review_clean_working_tree() -> None:
         "--exit-zero",
     ])
     assert result.exit_code == 0
+
+
+def test_cli_review_with_ai_option() -> None:
+    runner = CliRunner()
+    result = runner.invoke(app, [
+        "review",
+        "--ai", "offline",
+        "--format", "terminal",
+        "--exit-zero",
+    ])
+    assert result.exit_code == 0
+
+
+def test_review_engine_diff_with_ai_provider() -> None:
+    from agentblackbox.models.diff import GitDiff, FileDiff, DiffHunk, DiffLine, DiffLineType
+    lines = [
+        DiffLine(line_type=DiffLineType.DELETE, content="old = 1", old_lineno=1),
+        DiffLine(line_type=DiffLineType.ADD, content="old = 1", new_lineno=1),
+        DiffLine(line_type=DiffLineType.ADD, content="new_val = 2", new_lineno=2),
+    ]
+    hunk = DiffHunk(
+        old_start=1,
+        old_lines=1,
+        new_start=1,
+        new_lines=2,
+        header="@@ -1,1 +1,2 @@",
+        lines=lines,
+    )
+    diff = GitDiff(
+        files=[FileDiff(old_path="test.py", new_path="test.py", hunks=[hunk])],
+        raw_diff="diff --git a/test.py b/test.py\n--- a/test.py\n+++ b/test.py\n@@ -1,1 +1,2 @@\n-old = 1\n+old = 1\n+new_val = 2\n",
+    )
+    engine = ReviewEngine(
+        config=ReviewConfig(enable_ai=True, max_context_tokens=4000),
+        ai_provider=OfflineMockAIProvider(),
+    )
+    report = engine.review_diff(diff)
+    assert report.total_findings >= 0
+    assert report.model_name == "OfflineMockAIProvider"

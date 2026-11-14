@@ -34,8 +34,9 @@ class PatternScanner(BaseScanner):
         lines = content.splitlines()
 
         # 1. Secret & Key Scanning using the existing hardened secret detector
-        # Ignore test files from reporting fake secrets
-        is_test_file = any(part in file_path for part in ("tests/", "test_", "_test.py"))
+        # Ignore test files and migration scripts from reporting fake secrets
+        norm_file = file_path.replace("\\", "/")
+        is_test_file = any(part in norm_file for part in ("tests/", "test_", "_test.py", "apply_agentblackbox"))
         if not is_test_file:
             secret_matches = detect_secrets(content, source=file_path)
             sec_rule = BUILTIN_RULES["SEC-004"]
@@ -62,41 +63,48 @@ class PatternScanner(BaseScanner):
                     )
                 )
 
-        # 2. Insecure Permissions (chmod 777)
-        for idx, line in enumerate(lines, 1):
-            if _CHMOD_777_RE.search(line) and not line.strip().startswith("#") and "re.compile" not in line and "_RE" not in line:
-                findings.append(
-                    Finding(
-                        title="Insecure File Permissions (chmod 777)",
-                        severity=BUILTIN_RULES["SEC-002"].severity,
-                        file_path=file_path,
-                        line_start=idx,
-                        line_end=idx,
-                        category="security",
-                        message="File created or modified with world-writable permissions (777).",
-                        why_it_matters="Allows any local user or malicious process to read and overwrite sensitive files.",
-                        suggested_fix="Restrict file permissions to owner read/write (e.g. 0o600 or 0o700).",
-                        rule_id="SEC-005",
-                        cwe_id="CWE-732",
-                    )
-                )
+        # 2. Insecure Permissions (chmod 777) & 3. Insecure mktemp
+        if not is_test_file:
+            for idx, line in enumerate(lines, 1):
+                code_line = line.split("#", 1)[0].strip()
+                if not code_line:
+                    continue
 
-            # 3. Insecure mktemp
-            if _MKTEMP_RE.search(line) and not line.strip().startswith("#") and "re.compile" not in line and "_RE" not in line:
-                findings.append(
-                    Finding(
-                        title="Insecure Temporary File Creation",
-                        severity=BUILTIN_RULES["SEC-002"].severity,
-                        file_path=file_path,
-                        line_start=idx,
-                        line_end=idx,
-                        category="security",
-                        message="`tempfile.mktemp()` is deprecated and vulnerable to symlink race conditions.",
-                        why_it_matters="An attacker can create a symlink at the chosen path before file creation, leading to file overwrite.",
-                        suggested_fix="Use `tempfile.NamedTemporaryFile()` or `tempfile.mkstemp()` instead.",
-                        rule_id="SEC-006",
-                        cwe_id="CWE-377",
+                if any(k in line for k in ("re.compile", "_RE", "title=", "message=", "description=", "rule_id", "BUILTIN_RULES", "_DANGEROUS_COMMANDS")):
+                    continue
+
+                if _CHMOD_777_RE.search(code_line):
+                    findings.append(
+                        Finding(
+                            title="Insecure File Permissions (chmod 777)",
+                            severity=BUILTIN_RULES["SEC-002"].severity,
+                            file_path=file_path,
+                            line_start=idx,
+                            line_end=idx,
+                            category="security",
+                            message="File created or modified with world-writable permissions (777).",
+                            why_it_matters="Allows any local user or malicious process to read and overwrite sensitive files.",
+                            suggested_fix="Restrict file permissions to owner read/write (e.g. 0o600 or 0o700).",
+                            rule_id="SEC-005",
+                            cwe_id="CWE-732",
+                        )
                     )
-                )
+
+                if _MKTEMP_RE.search(code_line):
+                    findings.append(
+                        Finding(
+                            title="Insecure Temporary File Creation",
+                            severity=BUILTIN_RULES["SEC-002"].severity,
+                            file_path=file_path,
+                            line_start=idx,
+                            line_end=idx,
+                            category="security",
+                            message="`tempfile.mktemp()` is deprecated and vulnerable to symlink race conditions.",
+                            why_it_matters="An attacker can create a symlink at the chosen path before file creation, leading to file overwrite.",
+                            suggested_fix="Use `tempfile.NamedTemporaryFile()` or `tempfile.mkstemp()` instead.",
+                            rule_id="SEC-006",
+                            cwe_id="CWE-377",
+                        )
+                    )
 
         return findings

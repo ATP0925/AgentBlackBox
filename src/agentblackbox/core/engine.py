@@ -185,7 +185,7 @@ class ReviewEngine:
         model_name = None
         if self.ai_provider is not None:
             pruner = ContextPruner(max_tokens=self.config.max_context_tokens)
-            context_summary = pruner.assemble_review_context(code_ctx, target_files)
+            context_summary = pruner.assemble_review_context(code_ctx, target_diff=git_diff, target_files=target_files)
             system_prompt = build_system_prompt()
             user_prompt = build_diff_review_prompt(
                 diff_text=git_diff.raw_diff,
@@ -287,7 +287,7 @@ class ReviewEngine:
         model_name = None
         if self.ai_provider is not None and target_files:
             pruner = ContextPruner(max_tokens=self.config.max_context_tokens)
-            context_summary = pruner.assemble_review_context(code_ctx, target_files[:5])
+            context_summary = pruner.assemble_review_context(code_ctx, target_files=target_files[:5])
             sample_file = target_files[0]
             sample_content = code_ctx.files[sample_file].raw_source if sample_file in code_ctx.files else ""
             system_prompt = build_system_prompt()

@@ -1,6 +1,6 @@
 """Intelligent context pruning and token-budgeted prompt synthesizer."""
 
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from agentblackbox.models.context import CodeContext, FileContext, Symbol
 from agentblackbox.models.diff import GitDiff
@@ -14,8 +14,13 @@ def _estimate_tokens(text: str) -> int:
 class ContextPruner:
     """Selects high-signal code slices and compresses dependencies within token budgets."""
 
-    def __init__(self, default_token_budget: int = 8000) -> None:
-        self.default_token_budget = default_token_budget
+    def __init__(
+        self,
+        default_token_budget: int = 8000,
+        max_tokens: Optional[int] = None,
+    ) -> None:
+        self.default_token_budget = max_tokens if max_tokens is not None else default_token_budget
+        self.max_tokens = self.default_token_budget
 
     def create_minimal_symbol_stub(self, symbol: Symbol) -> str:
         """Create a compact signature + docstring stub for a symbol to preserve tokens."""
@@ -43,8 +48,9 @@ class ContextPruner:
     def assemble_review_context(
         self,
         code_context: CodeContext,
-        target_diff: Optional[GitDiff] = None,
+        target_diff: Optional[Union[GitDiff, List[str]]] = None,
         max_tokens: Optional[int] = None,
+        target_files: Optional[List[str]] = None,
     ) -> str:
         """Assemble an optimal, high-signal context string within the token budget.
 
@@ -56,14 +62,22 @@ class ContextPruner:
         budget = max_tokens or self.default_token_budget
         sections: List[str] = []
 
+        # If 2nd parameter is a list of file paths rather than GitDiff, accept it cleanly
+        if isinstance(target_diff, list):
+            effective_targets = target_diff
+            diff_obj = None
+        else:
+            diff_obj = target_diff
+            effective_targets = target_files or code_context.target_files
+
         # 1. Target Diff Section
-        if target_diff and target_diff.raw_diff.strip():
-            diff_text = f"=== PULL REQUEST / GIT DIFF ===\n{target_diff.raw_diff.strip()}\n"
+        if diff_obj and getattr(diff_obj, "raw_diff", "").strip():
+            diff_text = f"=== PULL REQUEST / GIT DIFF ===\n{diff_obj.raw_diff.strip()}\n"
             sections.append(diff_text)
             budget -= _estimate_tokens(diff_text)
 
         # 2. Directly Changed Files (Full source or target slices)
-        for target_path in code_context.target_files:
+        for target_path in effective_targets:
             file_ctx = code_context.files.get(target_path)
             if not file_ctx or not file_ctx.raw_source:
                 continue
@@ -90,7 +104,7 @@ class ContextPruner:
 
         # 3. Direct Dependency Summaries (Signatures only)
         for dep_path, file_ctx in code_context.files.items():
-            if dep_path in code_context.target_files:
+            if dep_path in effective_targets:
                 continue
             if budget <= 150:
                 break
@@ -100,4 +114,3 @@ class ContextPruner:
             budget -= _estimate_tokens(dep_stub)
 
         return "\n".join(sections)
-
