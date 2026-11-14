@@ -75,7 +75,7 @@ python -m pip install -e ".[dev]"
 
 # 3. Review current uncommitted git changes (working tree)
 abb review
-# Note: If 'abb' is not in PATH yet, run: python -m agentblackbox.cli.main review
+# Note: If 'abb' is not in PATH yet, run: python -m agentblackbox review (or .\abb.cmd review)
 
 # 4. Review a pull request or branch diff against main
 abb review feature-branch --base main --format markdown
