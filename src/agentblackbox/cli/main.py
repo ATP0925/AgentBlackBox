@@ -1027,5 +1027,18 @@ def ide_bridge(
     uvicorn.run("agentblackbox.api.main:app", host=host, port=port, log_level="info")
 
 
+@app.command("github-app")
+def github_app_server(
+    host: str = typer.Option("0.0.0.0", "--host", "-h", help="Bind host address"),
+    port: int = typer.Option(8000, "--port", "-p", help="Port to bind"),
+) -> None:
+    """Launch the AgentBlackBox GitHub App Webhook & Code Review server."""
+    console.print(f"[bold green]🐰 Starting AgentBlackBox GitHub App server[/] on http://{host}:{port}")
+    console.print(f"   [dim]Webhook URL:[/] http://{host}:{port}/github/webhook")
+    console.print(f"   [dim]Manifest Setup:[/] http://{host}:{port}/github/manifest")
+    console.print(f"   [dim]Health Check:[/] http://{host}:{port}/github/healthz")
+    uvicorn.run("agentblackbox.api.main:app", host=host, port=port, log_level="info")
+
+
 if __name__ == "__main__":
     app()

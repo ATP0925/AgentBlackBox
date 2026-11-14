@@ -223,6 +223,32 @@ abb review --ai gemini
 | `abb export-checkpoint <id>` | Export head-tip checkpoint JSON to an external file or stdout. |
 | `abb report <session_id>` | Export standalone timeline report (`--format html`, `json`, or `csv`). |
 | `abb serve` | Launch localhost (`127.0.0.1`) FastAPI & WebSocket inspector. |
+| `abb github-app [--port PORT]` | Launch GitHub App Webhook server for automated CodeRabbit-style PR reviews. |
+
+---
+
+## 🐰 GitHub App Automated Code Review (CodeRabbit Alternative)
+
+AgentBlackBox includes a full production-ready **GitHub App module** (`src/agentblackbox/github_app/`) that runs automated AI & AST code reviews on Pull Requests with zero source code retention.
+
+### 🌟 How It Works
+1. **Developer opens/updates a PR** &rarr; GitHub delivers webhook to `POST /github/webhook`.
+2. **Instant HMAC-SHA256 Verification** &rarr; Constant-time signature verification rejects unauthorized requests with `401`.
+3. **In-Flight In-Memory Analysis**:
+   - Diffs are scanned and **secrets are redacted in memory** before reaching any LLM.
+   - Deterministic AST scanners and domain analyzers identify bugs, security flaws, and performance anti-patterns.
+   - Architectural drift & compliance controls (`SOC2-CC6.1`, `OWASP-LLM06`) are verified.
+4. **Three-Layer GitHub Feedback**:
+   - **Walkthrough Comment**: Single auto-updating comment with marker `<!-- agentblackbox-walkthrough -->`, severity overview table, change summary, and bot command guide.
+   - **Inline PR Review**: Formal PR review with line comments and one-click ```suggestion code replacements.
+   - **Check Run & Annotations**: Passes/fails CI status check with line-by-line annotations (batched in 50s).
+
+### 🚀 1-Click Setup
+Start the server and open the manifest setup page:
+```bash
+python -m agentblackbox github-app --port 8000
+```
+Visit `http://localhost:8000/github/manifest` to register the GitHub App on your GitHub account with pre-filled least-privilege permissions. See [docs/INSTALL.md](docs/INSTALL.md) for full setup instructions and [docs/SECURITY.md](docs/SECURITY.md) for data privacy guarantees.
 
 ---
 

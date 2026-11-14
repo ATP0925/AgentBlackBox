@@ -75,6 +75,21 @@ class Finding:
     confidence: float = 1.0
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def description(self) -> str:
+        """Alias for message."""
+        return self.message
+
+    @property
+    def impact(self) -> str:
+        """Alias for why_it_matters."""
+        return self.why_it_matters
+
+    @property
+    def suggestion(self) -> str:
+        """Alias for suggested_fix."""
+        return self.suggested_fix
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert finding to standard dictionary."""
         d = asdict(self)

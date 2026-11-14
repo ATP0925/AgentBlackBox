@@ -1,5 +1,6 @@
 """FastAPI application for the AgentBlackBox dashboard API."""
 
+import os
 from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -14,28 +15,39 @@ app = FastAPI(
     version=__version__,
 )
 
+if os.environ.get("ALLOWED_HOSTS"):
+    allowed_hosts = [h.strip() for h in os.environ["ALLOWED_HOSTS"].split(",") if h.strip()]
+else:
+    allowed_hosts = ["127.0.0.1", "localhost", "testserver"]
+
 app.add_middleware(
     TrustedHostMiddleware,
-    allowed_hosts=["127.0.0.1", "localhost", "testserver"],
+    allowed_hosts=allowed_hosts,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1", "http://localhost"],
+    allow_origins=["http://127.0.0.1", "http://localhost", "*"],
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-Hub-Signature-256", "X-GitHub-Event", "X-GitHub-Delivery"],
 )
 
 # Import routes with optional bearer-token protection
 from agentblackbox.api.routes import sessions, events, timeline  # noqa: E402
 from agentblackbox.api import bridge  # noqa: E402
+from agentblackbox.github_app import webhook as gh_webhook  # noqa: E402
+from agentblackbox.github_app import manifest as gh_manifest  # noqa: E402
 
 _auth_deps = [Depends(require_api_token)]
 app.include_router(sessions.router, prefix="/api/v1", tags=["sessions"], dependencies=_auth_deps)
 app.include_router(events.router, prefix="/api/v1", tags=["events"], dependencies=_auth_deps)
 app.include_router(timeline.router, prefix="/api/v1", tags=["timeline"], dependencies=_auth_deps)
 app.include_router(bridge.router, prefix="/api/v1", tags=["bridge"], dependencies=_auth_deps)
+
+# GitHub App routes (authenticated via X-Hub-Signature-256)
+app.include_router(gh_webhook.router, prefix="/github")
+app.include_router(gh_manifest.router, prefix="/github")
 
 
 @app.get("/", response_class=HTMLResponse)
