@@ -38,9 +38,13 @@ checkpoints/
 blackbox_report_*
 *.sarif
 
-# IDE
+# IDE & Local Agent Hooks
 .vscode/
 .idea/
+.claude/
+.codex/
+.cursor/
+.gemini/
 *.swp
 *.swo
 *~
