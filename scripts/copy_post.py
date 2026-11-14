@@ -26,7 +26,7 @@ We treat human developers with zero-trust: branch protections, code reviews, aud
 
 That's why I built AgentBlackBox (ATP0925/AgentBlackBox).
 
-It's an open-core cryptographic flight recorder and CodeRabbit-style PR review bot built specifically for autonomous agents.
+It's an open-core cryptographic flight recorder and autonomous PR review engine built specifically for AI coding agents.
 
 Here is what we shipped today in v0.4.0:
 
@@ -37,7 +37,7 @@ Runs locally before any agent executes a tool.
 • Sensitive file shield: blocks rogue reads to .env, id_rsa, and ~/.aws.
 • Fails safe: always exits code 0 with silent stdout so your agent workflow never stumbles.
 
-2. CodeRabbit-Style GitHub PR Reviewer (Zero Code Retention):
+2. Autonomous In-Memory GitHub PR Reviewer (Zero Code Retention):
 • Built in Python 3.11 with FastAPI + httpx.
 • Generates an auto-updating Walkthrough comment with risk scores and file-by-file tables.
 • Emits one-click ```suggestion blocks right inside the diff.
@@ -56,7 +56,7 @@ Check out the repository and video demo in the first comment below! 👇
 
 Git only showed the final commit: "tests fixed". The intermediate tool calls were completely gone.
 
-We built AgentBlackBox to fix this: an open-source CodeRabbit + Cryptographic AI Flight Recorder 🧵👇
+We built AgentBlackBox to fix this: an autonomous PR review engine + cryptographic AI flight recorder 🧵👇
 
 2/ When Claude Code or Cursor runs, they execute arbitrary bash commands, edit files, and call MCP tools.
 
@@ -73,7 +73,7 @@ Supports:
 
 Sanitizes secrets, shields .env files, and always exits 0.
 
-4/ In v0.4.0, we added an open-source CodeRabbit-style GitHub App:
+4/ In v0.4.0, we added an autonomous in-memory GitHub App:
 • Single auto-updating Walkthrough comment
 • Diff-safe inline ```suggestion fixes
 • Check Runs with batched annotations
@@ -108,7 +108,7 @@ AgentBlackBox addresses this through two components:
 1. Local PreToolUse Interceptors:
 Using a single command (`abb hook-install --agent all --global`), it hooks into Claude Code, Cursor, Codex CLI, and Gemini CLI before tools run. It calculates Shannon entropy on command arguments to redact API keys in-flight, shields sensitive paths (.env, ~/.ssh), and appends every tool call to an append-only HMAC-SHA256 hash chain. Local hooks always exit code 0 with silent stdout, so the agent is never interrupted.
 
-2. Zero-Retention GitHub App (CodeRabbit Alternative):
+2. Zero-Retention GitHub PR Review Engine:
 An async FastAPI + httpx app that reviews incoming PR diffs in-memory. It computes line-to-hunk positions to eliminate GitHub 422 errors, posts auto-updating walkthrough tables, and provides one-click ```suggestion blocks. To protect IP, customer diffs are never written to disk or databases—they exist strictly in RAM during review.
 
 Prompt Injection Quarantine:
@@ -121,7 +121,7 @@ Looking forward to your questions on our diff parser, entropy thresholds, and ho
 GitHub: https://github.com/ATP0925/AgentBlackBox
 Release: https://github.com/ATP0925/AgentBlackBox/releases/tag/v0.4.0""",
 
-    "reddit": """Title: I built an open-source CodeRabbit alternative & AI flight recorder in Python after an agent deleted our test suite
+    "reddit": """Title: I built an open-source AI PR review engine & cryptographic flight recorder in Python after an agent deleted our test suite
 
 Hey r/Python!
 
@@ -135,7 +135,7 @@ To fix this, we spent the last few weeks building AgentBlackBox (https://github.
 1. Universal Interceptor Hooks (`abb hook-install --agent all --global`):
 Hooks into Claude Code, Cursor, Codex CLI, and Gemini CLI. Before a bash command or file write runs, it computes Shannon entropy to intercept leaked AWS keys or JWTs in real time, and blocks reads to sensitive files like `.env` and `id_rsa`.
 
-2. CodeRabbit-Style GitHub Review Bot (`src/agentblackbox/github_app/`):
+2. Autonomous In-Memory GitHub Review Bot (`src/agentblackbox/github_app/`):
 Built on FastAPI + httpx with async workers.
 - Line-to-hunk position mapping: guarantees inline comments never trigger GitHub 422 Unprocessable Entity errors.
 - One-click ````suggestion` blocks right in the PR diff.
@@ -162,7 +162,7 @@ Yet, our auditing infrastructure hasn't caught up.
 
 When an AI agent makes 50 tool calls across 20 files, traditional git history only reveals the final commit. The intermediate failures, deleted tests, inspected secrets, and discarded files remain completely invisible.
 
-To solve this, we engineered AgentBlackBox—an open-core, cryptographic AI flight recorder and CodeRabbit-style GitHub App PR review bot.
+To solve this, we engineered AgentBlackBox—an open-core, cryptographic AI flight recorder and autonomous GitHub App PR review engine.
 
 Read more & explore the repo:
 👉 https://github.com/ATP0925/AgentBlackBox"""

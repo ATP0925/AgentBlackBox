@@ -1,13 +1,13 @@
-# 🚀 AgentBlackBox v0.4.0: Production-Grade CodeRabbit Alternative & Cryptographic AI Flight Recorder
+# 🚀 AgentBlackBox v0.4.0: Autonomous In-Memory PR Review Engine & Cryptographic AI Flight Recorder
 
-AgentBlackBox v0.4.0 transforms autonomous AI agent governance. We are proud to introduce a complete, open-core, production-grade **CodeRabbit-style GitHub App PR Reviewer**, paired with universal multi-agent interception for **Claude Code, Cursor, Codex CLI, and Gemini CLI**.
+AgentBlackBox v0.4.0 transforms autonomous AI agent governance. We are proud to introduce a complete, open-core, production-grade **Autonomous GitHub App In-Memory PR Review Engine**, paired with universal multi-agent interception for **Claude Code, Cursor, Codex CLI, and Gemini CLI**.
 
 ---
 
 ## 🌟 Major Highlights in v0.4.0
 
-### 1. 🤖 CodeRabbit-Style Automated PR Review Bot (`src/agentblackbox/github_app/`)
-Turn any GitHub repository into an AI-guarded codebase with automated pull request reviews:
+### 1. 🤖 Autonomous Pull Request Review Engine (`src/agentblackbox/github_app/`)
+Turn any GitHub repository into an AI-guarded codebase with automated in-memory pull request reviews:
 - **Auto-Updating Walkthrough Comments**: Posts a high-level summary of changes, file-by-file risk tables, sequence/flow notes, and finding breakdown. Edits cleanly in place using idempotency markers (`<!-- agentblackbox-walkthrough -->`).
 - **One-Click Fixes (`suggestion` Blocks)**: Inline comments placed accurately on changed hunks with diff-safe suggestions that developers can commit directly from GitHub's UI.
 - **GitHub Check Runs**: Pass/fail status checks with batched line annotations (strictly adhering to GitHub's 50-annotation batch limits).

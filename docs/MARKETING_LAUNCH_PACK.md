@@ -14,7 +14,7 @@ All visual and multimedia assets have been generated and saved:
 | Asset Name | Resolution / Specs | Path | Direct Link |
 |---|---|---|---|
 | **Poster 1: Flight Recorder** | 1920x1080 (PNG) | `assets/posters/poster1_flight_recorder.png` | [View Poster 1](file:///C:/Users/atpad/AgentBlackBox/assets/posters/poster1_flight_recorder.png) |
-| **Poster 2: CodeRabbit Alternative** | 1920x1080 (PNG) | `assets/posters/poster2_coderabbit_alternative.png` | [View Poster 2](file:///C:/Users/atpad/AgentBlackBox/assets/posters/poster2_coderabbit_alternative.png) |
+| **Poster 2: In-Memory PR Review Engine** | 1920x1080 (PNG) | `assets/posters/poster2_pr_review_engine.png` | [View Poster 2](file:///C:/Users/atpad/AgentBlackBox/assets/posters/poster2_pr_review_engine.png) |
 | **Poster 3: Universal Hooks** | 1920x1080 (PNG) | `assets/posters/poster3_universal_hooks.png` | [View Poster 3](file:///C:/Users/atpad/AgentBlackBox/assets/posters/poster3_universal_hooks.png) |
 | **Product Overview Video** | 1080p, 96s, AAC Audio (MP4) | `assets/video/agentblackbox_product_overview.mp4` | [Watch Video](file:///C:/Users/atpad/AgentBlackBox/assets/video/agentblackbox_product_overview.mp4) |
 | **Neural Voiceover Audio** | 24kHz Studio Neural Voice (MP3) | `agentblackbox_voiceover.mp3` | [Listen Audio](file:///C:/Users/atpad/AgentBlackBox/agentblackbox_voiceover.mp3) |
@@ -38,7 +38,7 @@ python scripts/copy_post.py devto      # Copies Dev.to long-form article
 ## 1. LinkedIn Founder Launch Post
 
 **Target Audience:** CTOs, Lead Engineers, AI Engineers, Security Directors, Founders  
-**Visual Asset to Attach:** Attach `assets/posters/poster2_coderabbit_alternative.png` or `assets/video/agentblackbox_product_overview.mp4`  
+**Visual Asset to Attach:** Attach `assets/posters/poster2_pr_review_engine.png` or `assets/video/agentblackbox_product_overview.mp4`  
 **Live Tab Open:** [https://www.linkedin.com/feed/](https://www.linkedin.com/feed/)
 
 ### Post Copy:
@@ -55,7 +55,7 @@ We treat human developers with zero-trust: branch protections, code reviews, aud
 
 That's why I built AgentBlackBox (ATP0925/AgentBlackBox).
 
-It's an open-core cryptographic flight recorder and CodeRabbit-style PR review bot built specifically for autonomous agents.
+It's an open-core cryptographic flight recorder and autonomous PR review engine built specifically for AI coding agents.
 
 Here is what we shipped today in v0.4.0:
 
@@ -66,7 +66,7 @@ Runs locally before any agent executes a tool.
 • Sensitive file shield: blocks rogue reads to .env, id_rsa, and ~/.aws.
 • Fails safe: always exits code 0 with silent stdout so your agent workflow never stumbles.
 
-2. CodeRabbit-Style GitHub PR Reviewer (Zero Code Retention):
+2. Autonomous In-Memory GitHub PR Reviewer (Zero Code Retention):
 • Built in Python 3.11 with FastAPI + httpx.
 • Generates an auto-updating Walkthrough comment with risk scores and file-by-file tables.
 • Emits one-click ```suggestion blocks right inside the diff.
@@ -103,7 +103,7 @@ Documentation & 1-Click GitHub App setup guide: https://github.com/ATP0925/Agent
 
 Git only showed the final commit: "tests fixed". The intermediate tool calls were completely gone.
 
-We built AgentBlackBox to fix this: an open-source CodeRabbit + Cryptographic AI Flight Recorder 🧵👇
+We built AgentBlackBox to fix this: an autonomous PR review engine + cryptographic AI flight recorder 🧵👇
 ```
 
 ### Tweet 2:
@@ -129,7 +129,7 @@ Sanitizes secrets, shields .env files, and always exits 0.
 
 ### Tweet 4:
 ```text
-4/ In v0.4.0, we added an open-source CodeRabbit-style GitHub App:
+4/ In v0.4.0, we added an autonomous in-memory GitHub App:
 • Single auto-updating Walkthrough comment
 • Diff-safe inline ```suggestion fixes
 • Check Runs with batched annotations
@@ -188,7 +188,7 @@ AgentBlackBox addresses this through two components:
 1. Local PreToolUse Interceptors:
 Using a single command (`abb hook-install --agent all --global`), it hooks into Claude Code, Cursor, Codex CLI, and Gemini CLI before tools run. It calculates Shannon entropy on command arguments to redact API keys in-flight, shields sensitive paths (.env, ~/.ssh), and appends every tool call to an append-only HMAC-SHA256 hash chain. Local hooks always exit code 0 with silent stdout, so the agent is never interrupted.
 
-2. Zero-Retention GitHub App (CodeRabbit Alternative):
+2. Zero-Retention GitHub PR Review Engine:
 An async FastAPI + httpx app that reviews incoming PR diffs in-memory. It computes line-to-hunk positions to eliminate GitHub 422 errors, posts auto-updating walkthrough tables, and provides one-click ```suggestion blocks. To protect IP, customer diffs are never written to disk or databases—they exist strictly in RAM during review.
 
 Prompt Injection Quarantine:
@@ -209,7 +209,7 @@ Release: https://github.com/ATP0925/AgentBlackBox/releases/tag/v0.4.0
 **Live Tab Open:** [https://www.reddit.com/r/Python/submit/](https://www.reddit.com/r/Python/submit/)
 
 ### r/Python Post:
-**Title:** `I built an open-source CodeRabbit alternative & AI flight recorder in Python after an agent deleted our test suite`  
+**Title:** `I built an open-source AI PR review engine & cryptographic flight recorder in Python after an agent deleted our test suite`  
 **Flair:** Project / Showcase
 
 ```text
@@ -225,7 +225,7 @@ To fix this, we spent the last few weeks building AgentBlackBox (https://github.
 1. Universal Interceptor Hooks (`abb hook-install --agent all --global`):
 Hooks into Claude Code, Cursor, Codex CLI, and Gemini CLI. Before a bash command or file write runs, it computes Shannon entropy to intercept leaked AWS keys or JWTs in real time, and blocks reads to sensitive files like .env and id_rsa.
 
-2. CodeRabbit-Style GitHub Review Bot (`src/agentblackbox/github_app/`):
+2. Autonomous In-Memory GitHub Review Bot (`src/agentblackbox/github_app/`):
 Built on FastAPI + httpx with async workers.
 - Line-to-hunk position mapping: guarantees inline comments never trigger GitHub 422 Unprocessable Entity errors.
 - One-click ```suggestion blocks right in the PR diff.

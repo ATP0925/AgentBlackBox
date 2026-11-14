@@ -5,7 +5,7 @@ out_dir = r"C:\Users\atpad\AgentBlackBox\assets\video"
 os.makedirs(out_dir, exist_ok=True)
 
 poster1 = r"C:\Users\atpad\AgentBlackBox\assets\posters\poster1_flight_recorder.png"
-poster2 = r"C:\Users\atpad\AgentBlackBox\assets\posters\poster2_coderabbit_alternative.png"
+poster2 = r"C:\Users\atpad\AgentBlackBox\assets\posters\poster2_pr_review_engine.png"
 poster3 = r"C:\Users\atpad\AgentBlackBox\assets\posters\poster3_universal_hooks.png"
 audio = r"C:\Users\atpad\AgentBlackBox\agentblackbox_voiceover.mp3"
 output_video = os.path.join(out_dir, "agentblackbox_product_overview.mp4")

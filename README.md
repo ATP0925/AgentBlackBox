@@ -223,11 +223,11 @@ abb review --ai gemini
 | `abb export-checkpoint <id>` | Export head-tip checkpoint JSON to an external file or stdout. |
 | `abb report <session_id>` | Export standalone timeline report (`--format html`, `json`, or `csv`). |
 | `abb serve` | Launch localhost (`127.0.0.1`) FastAPI & WebSocket inspector. |
-| `abb github-app [--port PORT]` | Launch GitHub App Webhook server for automated CodeRabbit-style PR reviews. |
+| `abb github-app [--port PORT]` | Launch GitHub App Webhook server for automated in-memory PR code reviews. |
 
 ---
 
-## 🐰 GitHub App Automated Code Review (CodeRabbit Alternative)
+## 🛡️ Autonomous GitHub App In-Memory PR Review Engine
 
 AgentBlackBox includes a full production-ready **GitHub App module** (`src/agentblackbox/github_app/`) that runs automated AI & AST code reviews on Pull Requests with zero source code retention.
 

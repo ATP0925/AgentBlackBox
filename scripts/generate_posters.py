@@ -156,13 +156,13 @@ def generate_poster_1(out_path):
     print(f"Saved: {out_path}")
 
 # =========================================================================
-# POSTER 2: CodeRabbit Alternative & GitHub App
+# POSTER 2: Autonomous Pull Request Review Engine
 # =========================================================================
 def generate_poster_2(out_path):
     img = Image.new("RGB", (WIDTH, HEIGHT), BG_COLOR)
     draw = ImageDraw.Draw(img)
     
-    draw_header(draw, "CodeRabbit-Style Pull Request Reviews — 100% Open-Core",
+    draw_header(draw, "Autonomous Pull Request Review Engine — 100% In-Memory",
                 "Automated PR code reviews with zero customer code retention and one-click suggestion fixes.")
     
     # Left Box: PR Walkthrough Comment Card
@@ -178,7 +178,7 @@ def generate_poster_2(out_path):
     tbl = [w[0]+20, w[1]+170, w[2]-20, w[3]-110]
     draw.rounded_rectangle(tbl, radius=12, fill=(13, 17, 23), outline=(48, 54, 61), width=1)
     
-    draw.text((tbl[0]+20, tbl[1]+20), "### 🐰 AgentBlackBox Walkthrough Summary", font=font_body_bold, fill=TEXT_WHITE)
+    draw.text((tbl[0]+20, tbl[1]+20), "### 🛡️ AgentBlackBox Walkthrough Summary", font=font_body_bold, fill=TEXT_WHITE)
     draw.text((tbl[0]+20, tbl[1]+55), "Overall Risk Score: 2.1 / 10.0  [LOW RISK]", font=font_body_bold, fill=LIGHT_GREEN)
     
     # Table header
@@ -319,5 +319,5 @@ if __name__ == "__main__":
     out_dir = r"C:\Users\atpad\AgentBlackBox\assets\posters"
     os.makedirs(out_dir, exist_ok=True)
     generate_poster_1(os.path.join(out_dir, "poster1_flight_recorder.png"))
-    generate_poster_2(os.path.join(out_dir, "poster2_coderabbit_alternative.png"))
+    generate_poster_2(os.path.join(out_dir, "poster2_pr_review_engine.png"))
     generate_poster_3(os.path.join(out_dir, "poster3_universal_hooks.png"))

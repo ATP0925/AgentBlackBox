@@ -1,6 +1,6 @@
 # Installing & Configuring the AgentBlackBox GitHub App
 
-AgentBlackBox acts as a self-hosted or cloud-managed AI Code Review Bot (CodeRabbit alternative) that automates PR code reviews, architectural drift checks, and security audits.
+AgentBlackBox acts as a self-hosted or cloud-managed Autonomous AI PR Review & Security Engine that automates in-memory pull request reviews, architectural drift checks, and security audits.
 
 ---
 
