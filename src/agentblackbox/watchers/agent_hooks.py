@@ -151,3 +151,105 @@ def _main() -> None:
 if __name__ == "__main__":
     _main()
 
+
+# --- v0.3.0 Universal IDE Collector (Claude Code, Cursor, Cline, Antigravity) ---
+from dataclasses import dataclass
+from agentblackbox.storage.models import Severity
+
+
+@dataclass(frozen=True)
+class NormalizedAgentEvent:
+    agent_source: str
+    event_type: str
+    tool_name: str
+    target_resource: str
+    raw_arguments: dict[str, Any]
+
+    def to_storage_event(self, session_id: str) -> Event:
+        return Event(
+            session_id=session_id,
+            event_type=self.event_type,
+            severity=Severity.INFO,
+            source_path=self.target_resource if self.target_resource != "workspace" else None,
+            agent_id=self.agent_source,
+            payload={
+                "agent_source": self.agent_source,
+                "tool_name": self.tool_name,
+                "target": self.target_resource,
+                "arguments": self.raw_arguments,
+            },
+            tags=[f"ide:{self.agent_source}", f"tool:{self.tool_name}"],
+        )
+
+
+class UniversalIDECollector:
+    """Normalizes hook payloads from Claude Code, Cursor, Cline, and Google Antigravity IDE."""
+
+    @staticmethod
+    def parse_hook_payload(
+        payload: dict[str, Any], source_hint: str = "auto"
+    ) -> NormalizedAgentEvent:
+        if source_hint == "claude_code" or "tool_input" in payload or "hook_event_name" in payload:
+            tool_name = str(payload.get("tool_name") or payload.get("name") or "unknown_tool")
+            tool_input = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
+            target = str(
+                tool_input.get("file_path")
+                or tool_input.get("command")
+                or tool_input.get("path")
+                or "workspace"
+            )
+            ev_type = (
+                EventType.CMD_EXECUTE
+                if tool_name.lower() in ("bash", "run_command", "execute_command")
+                else EventType.FILE_MODIFY
+            )
+            return NormalizedAgentEvent(
+                agent_source="claude_code",
+                event_type=ev_type,
+                tool_name=tool_name,
+                target_resource=target,
+                raw_arguments=tool_input,
+            )
+
+        if source_hint == "cline" or "cline_task_id" in payload or "say" in payload or "ask" in payload:
+            tool_name = str(payload.get("tool") or payload.get("ask") or "cline_action")
+            target = str(payload.get("path") or payload.get("command") or "workspace")
+            ev_type = EventType.CMD_EXECUTE if "command" in payload else EventType.FILE_MODIFY
+            return NormalizedAgentEvent(
+                agent_source="cline",
+                event_type=ev_type,
+                tool_name=tool_name,
+                target_resource=target,
+                raw_arguments=payload,
+            )
+
+        if source_hint == "cursor" or "composerId" in payload or "mcpServer" in payload:
+            tool_name = str(payload.get("toolName") or payload.get("action") or "cursor_composer")
+            params = payload.get("parameters") if isinstance(payload.get("parameters"), dict) else payload
+            target = str(params.get("relativeWorkspacePath") or params.get("command") or "workspace")
+            ev_type = EventType.CMD_EXECUTE if "command" in params else EventType.FILE_MODIFY
+            return NormalizedAgentEvent(
+                agent_source="cursor",
+                event_type=ev_type,
+                tool_name=tool_name,
+                target_resource=target,
+                raw_arguments=params,
+            )
+
+        tool_name = str(payload.get("tool") or payload.get("function") or "agent_step")
+        args = payload.get("args") if isinstance(payload.get("args"), dict) else payload
+        target = str(args.get("TargetFile") or args.get("command") or args.get("path") or "workspace")
+        ev_type = (
+            EventType.CMD_EXECUTE
+            if tool_name.lower() in ("execute_bash", "run_command") or "command" in args
+            else EventType.FILE_MODIFY
+        )
+        return NormalizedAgentEvent(
+            agent_source=source_hint if source_hint != "auto" else "antigravity",
+            event_type=ev_type,
+            tool_name=tool_name,
+            target_resource=target,
+            raw_arguments=args,
+        )
+
+

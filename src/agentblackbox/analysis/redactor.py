@@ -4,11 +4,14 @@ import re
 from typing import Any, List, Optional, Tuple
 
 from agentblackbox.analysis.secret_detector import (
+    PATTERNS,
+    SecretDetector,
     SecretMatch,
     _SECRET_PATTERNS,
     _is_false_positive,
     _secret_fingerprint,
     _shannon_entropy,
+    reassemble_split_tokens,
 )
 
 def _is_path_like_value(val: Optional[str]) -> bool:
@@ -283,3 +286,21 @@ def redact_bytes(data: bytes, source: str = "file_content") -> Tuple[bytes, List
     if not matches:
         return data, []
     return redacted.encode(encoding), matches
+
+
+def redact_secrets(text: str) -> str:
+    """Convenience string redactor applying multi-pass detection, split token reassembly, and pattern masking."""
+    if not text or not isinstance(text, str):
+        return text
+    reassembled = reassemble_split_tokens(text)
+    working = reassembled if any(p.search(reassembled) for _, p in PATTERNS) else text
+    detector = SecretDetector()
+    matches = detector.scan_text(working)
+    result = working
+    for match in matches:
+        if match.matched_text and match.matched_text in result:
+            result = result.replace(match.matched_text, f"[REDACTED:{match.pattern_name}]")
+    for name, pattern in PATTERNS:
+        result = pattern.sub(f"[REDACTED:{name}]", result)
+    return result
+

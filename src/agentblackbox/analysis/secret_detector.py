@@ -1,73 +1,71 @@
-"""Detect secrets (API keys, tokens, passwords) in event payloads and file content."""
+"""Multi-pass secret detector catching direct, split, URL, Base64, and Hex secrets."""
+from __future__ import annotations
 
+import base64
+import binascii
 from collections import Counter
+from dataclasses import dataclass
 import hashlib
 import hmac
+import json
 import math
 import os
+from pathlib import Path
 import re
 import secrets
 import sys
-from dataclasses import dataclass
-from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional, Tuple
+import urllib.parse
+
+# Split-token concatenation regex
+_SPLIT_CONCAT_RE = re.compile(
+    r"""(['"])([A-Za-z0-9_\-/+=]{3,})\1\s*(?:\+|\.)?\s*(['"])([A-Za-z0-9_\-/+=]{6,})\3"""
+)
+_BASE64_CANDIDATE_RE = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{20,}={0,2}(?![A-Za-z0-9+/=])")
+_HEX_CANDIDATE_RE = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{40,}(?![0-9a-fA-F])")
 
 # Match plausible high-entropy secret tokens (20 to 256 non-whitespace token chars)
-# while ignoring plain filesystem paths (/usr/local/...) and URLs without query keys
 _CANDIDATE_TOKEN_RE = re.compile(
     r"(?<![/\w.-])([A-Za-z0-9_\-+=/]{20,256})(?![/\w.-])"
 )
 
-# Pre-compiled patterns for known secret formats
-_SECRET_PATTERNS = [
-    # AWS
-    (re.compile(r"AKIA[0-9A-Z]{16}"), "aws_access_key"),
-    (re.compile(r"(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY)\s*[:=]\s*\S{20,}"), "aws_secret_key"),
-    # GitHub
-    (re.compile(r"gh[pousr]_[A-Za-z0-9_]{36,}"), "github_token"),
-    (re.compile(r"github_pat_[A-Za-z0-9_]{22,}"), "github_pat"),
-    # OpenAI
-    (re.compile(r"sk-[A-Za-z0-9]{20,}"), "openai_api_key"),
-    # Stripe
-    (re.compile(r"sk_live_[A-Za-z0-9]{20,}"), "stripe_live_key"),
-    (re.compile(r"sk_test_[A-Za-z0-9]{20,}"), "stripe_test_key"),
-    # Google
-    (re.compile(r"AIza[0-9A-Za-z\-_]{35}"), "google_api_key"),
-    # Slack
-    (re.compile(r"xox[baprs]-[0-9A-Za-z\-]{10,}"), "slack_token"),
-    # Generic patterns
-    (re.compile(r"(?:api[_-]?key|apikey|api[_-]?secret)\s*[:=]\s*['\"]?\S{16,}['\"]?", re.IGNORECASE), "generic_api_key"),
-    (re.compile(r"(?:password|passwd|pwd)\s*[:=]\s*['\"]?\S{8,}['\"]?", re.IGNORECASE), "password"),
-    (re.compile(r"-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----"), "private_key"),
-    (re.compile(r"(?:bearer|token)\s+[A-Za-z0-9\-._~+/]{20,}", re.IGNORECASE), "bearer_token"),
-    # Database URLs
-    (re.compile(r"(?:postgres|mysql|mongodb)://\S+:\S+@\S+"), "database_url"),
+PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
+    ("aws_access_key", re.compile(r"(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}")),
+    ("aws_secret_key", re.compile(r"(?i)aws[_\-\s]*secret[_\-\s]*(?:access[_\-\s]*)?key\s*[:=]\s*['\"]?([A-Za-z0-9/+=]{40})['\"]?")),
+    ("github_pat", re.compile(r"github_pat_[A-Za-z0-9_]{22,255}")),
+    ("github_token", re.compile(r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,255}")),
+    ("openai_api_key", re.compile(r"sk-(?:proj-|live-|test-)?[A-Za-z0-9_\-]{20,}")),
+    ("anthropic_api_key", re.compile(r"sk-ant-api03-[A-Za-z0-9_\-]{20,}")),
+    ("stripe_live_key", re.compile(r"(?:sk|rk)_live_[A-Za-z0-9]{16,}")),
+    ("stripe_test_key", re.compile(r"(?:sk|rk)_test_[A-Za-z0-9]{16,}")),
+    ("google_api_key", re.compile(r"AIza[0-9A-Za-z_\-]{35}")),
+    ("slack_token", re.compile(r"xox[baprs]-[0-9A-Za-z\-]{10,48}")),
+    ("jwt_token", re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}")),
+    ("private_key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |PGP |DSA )?PRIVATE KEY-----")),
+    ("bearer_token", re.compile(r"(?i)bearer\s+([A-Za-z0-9_\-\.=]{20,})")),
+    ("database_url", re.compile(r"(?i)(?:postgres|postgresql|mysql|mongodb(?:\+srv)?|redis)://[^:\s]+:[^@\s]+@[^\s'\"]+")),
+    ("generic_api_key", re.compile(r"(?i)(?:api[_-]?key|secret[_-]?key|access[_-]?token)\s*[:=]\s*['\"]([A-Za-z0-9_\-]{16,})['\"]")),
+    ("password", re.compile(r"(?i)(?:password|passwd|pwd)\s*[:=]\s*['\"]([^'\"]{8,})['\"]")),
 ]
 
-# Patterns that look like secrets but are actually placeholders
+# Legacy tuple format (regex, name)
+_SECRET_PATTERNS = [(pattern, name) for name, pattern in PATTERNS]
+
 _FALSE_POSITIVE_PATTERNS = [
-    re.compile(r"sk-[xX]{16,}"),  # sk-xxxxxxxx
+    re.compile(r"sk-[xX]{16,}"),
     re.compile(r"your[_-]?api[_-]?key", re.IGNORECASE),
-    re.compile(r"<[A-Z_]+>"),  # <API_KEY>
-    re.compile(r"\$\{[A-Z_]+\}"),  # ${API_KEY}
+    re.compile(r"<[A-Z_]+>"),
+    re.compile(r"\$\{[A-Z_]+\}"),
     re.compile(r"process\.env\.\w+"),
     re.compile(r"os\.environ"),
     re.compile(r"REPLACE_ME|TODO|FIXME|CHANGEME|INSERT_HERE", re.IGNORECASE),
 ]
 
-
 _CACHED_SALT: Optional[str] = None
 
 
 def _get_or_create_secret_salt(salt_override: Optional[str] = None) -> bytes:
-    """Return salt for HMAC secret fingerprinting without hardcoded public fallbacks.
-
-    Priority:
-    1. Explicit salt_override parameter
-    2. ABB_SECRET_SALT environment variable
-    3. Persistent random 32-byte salt stored at ~/.agentblackbox/.secret_salt (mode 0600)
-    4. Ephemeral in-process random 32-byte salt if filesystem is read-only
-    """
+    """Return salt for HMAC secret fingerprinting without hardcoded public fallbacks."""
     global _CACHED_SALT
     if salt_override:
         return salt_override.encode("utf-8")
@@ -116,37 +114,44 @@ def _get_or_create_secret_salt(salt_override: Optional[str] = None) -> bytes:
 
 
 def _secret_fingerprint(raw: str, salt: Optional[str] = None) -> str:
-    """Deterministic 8-char HMAC-SHA256 fingerprint of secret without leaking content.
-
-    Prevents offline rainbow table / brute-force dictionary attacks on short secrets.
-    Uses configurable ABB_SECRET_SALT, explicit salt, or a persistent local random key (0600).
-    Has zero hardcoded salt fallbacks.
-    """
+    """Deterministic 8-char HMAC-SHA256 fingerprint of secret without leaking content."""
     key = _get_or_create_secret_salt(salt)
     return hmac.new(key, raw.encode("utf-8"), hashlib.sha256).hexdigest()[:8]
 
 
 @dataclass
 class SecretMatch:
-    """A detected secret match.
-
-    Attributes:
-        secret_type: Category of secret (e.g., 'aws_access_key').
-        matched_text: Safe placeholder ([REDACTED:<type>]); never leaks raw secret.
-        confidence: 0.0-1.0 confidence score.
-        source: Where it was found ('payload', 'file_content', etc.).
-        length: Character length of the matched secret.
-        offset: Character index offset in the source text.
-        fingerprint: Safe 8-char SHA-256 fingerprint for correlation without content leak.
-    """
-
-    secret_type: str
-    matched_text: str
-    confidence: float
-    source: str
+    """A detected secret match supporting both pattern_name and secret_type."""
+    pattern_name: str = ""
+    matched_text: str = ""
+    entropy: float = 0.0
+    line_number: Optional[int] = None
+    secret_type: str = ""
+    confidence: float = 0.9
+    source: str = "payload"
     length: int = 0
     offset: Optional[int] = None
     fingerprint: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.pattern_name and self.secret_type:
+            self.pattern_name = self.secret_type
+        elif not self.secret_type and self.pattern_name:
+            self.secret_type = self.pattern_name
+        if not self.length and self.matched_text:
+            self.length = len(self.matched_text)
+
+
+def reassemble_split_tokens(text: str) -> str:
+    """Reassemble strings split across quotes/concatenation into candidate tokens."""
+    prev = None
+    curr = text
+    for _ in range(4):
+        if curr == prev:
+            break
+        prev = curr
+        curr = _SPLIT_CONCAT_RE.sub(lambda m: f'"{m.group(2)}{m.group(4)}"', curr)
+    return curr
 
 
 def _shannon_entropy(text: str) -> float:
@@ -171,7 +176,6 @@ def find_high_entropy_tokens(
     findings: list[tuple[str, float]] = []
     for match in _CANDIDATE_TOKEN_RE.finditer(sample):
         token = match.group(1)
-        # Skip pure hex git commit SHAs (40 chars lowercase hex) or pure letters
         if len(token) == 40 and all(c in "0123456789abcdef" for c in token):
             continue
         if token.isalpha() or token.isdigit():
@@ -183,15 +187,7 @@ def find_high_entropy_tokens(
 
 
 def _is_false_positive(text: str) -> bool:
-    """Check if matched text is a known false positive.
-
-    Args:
-        text: The matched text to check.
-
-    Returns:
-        True if this is likely a placeholder, not a real secret.
-    """
-    # Exact pwd/PWD with a path-like value is working directory, not password
+    """Check if matched text is a known false positive."""
     pwd_m = re.match(r"^(?:pwd)\s*[:=]\s*['\"]?(\S+?)['\"]?$", text, re.IGNORECASE)
     if pwd_m:
         val = pwd_m.group(1).strip("'\"")
@@ -208,27 +204,144 @@ def _is_false_positive(text: str) -> bool:
     return False
 
 
+class SecretDetector:
+    """Multi-pass secret detector for plain, split, URL, Base64, and Hex secret payloads."""
+
+    def __init__(self, min_entropy: float = 4.5) -> None:
+        self.min_entropy = min_entropy
+
+    def _calculate_entropy(self, text: str) -> float:
+        return _shannon_entropy(text)
+
+    def _match_first_pattern(self, candidate: str) -> Optional[Tuple[str, str]]:
+        for name, pattern in PATTERNS:
+            m = pattern.search(candidate)
+            if m:
+                matched = m.group(1) if m.lastindex else m.group(0)
+                return name, matched
+        return None
+
+    def scan_text(self, text: str) -> List[SecretMatch]:
+        if not text:
+            return []
+        matches: List[SecretMatch] = []
+        seen: set[Tuple[str, str]] = set()
+
+        for line_idx, raw_line in enumerate(text.splitlines(), start=1):
+            reassembled = reassemble_split_tokens(raw_line)
+            for target_line, prefix in ((raw_line, ""), (reassembled, "split_")):
+                for name, pattern in PATTERNS:
+                    for m in pattern.finditer(target_line):
+                        val = m.group(1) if m.lastindex else m.group(0)
+                        if _is_false_positive(val):
+                            continue
+                        if (name, val) not in seen:
+                            seen.add((name, val))
+                            label = f"{prefix}{name}" if prefix and val not in raw_line else name
+                            matches.append(
+                                SecretMatch(
+                                    pattern_name=label,
+                                    secret_type=label,
+                                    matched_text=val,
+                                    entropy=round(self._calculate_entropy(val), 3),
+                                    line_number=line_idx,
+                                    confidence=0.9,
+                                    fingerprint=_secret_fingerprint(val),
+                                )
+                            )
+
+            if "%" in raw_line:
+                unquoted = urllib.parse.unquote(raw_line)
+                if unquoted != raw_line:
+                    hit = self._match_first_pattern(unquoted)
+                    if hit and not _is_false_positive(hit[1]):
+                        if (hit[0], hit[1]) not in seen:
+                            seen.add((hit[0], hit[1]))
+                            label = f"urlenc_{hit[0]}"
+                            matches.append(
+                                SecretMatch(
+                                    pattern_name=label,
+                                    secret_type=label,
+                                    matched_text=hit[1],
+                                    entropy=round(self._calculate_entropy(hit[1]), 3),
+                                    line_number=line_idx,
+                                    confidence=0.9,
+                                    fingerprint=_secret_fingerprint(hit[1]),
+                                )
+                            )
+
+            for b64_m in _BASE64_CANDIDATE_RE.finditer(raw_line):
+                token = b64_m.group(0)
+                if len(token) % 4 != 0:
+                    continue
+                try:
+                    decoded = base64.b64decode(token, validate=True).decode("utf-8", errors="ignore")
+                except (binascii.Error, ValueError):
+                    continue
+                hit = self._match_first_pattern(decoded)
+                if hit and not _is_false_positive(hit[1]):
+                    label = f"base64_{hit[0]}"
+                    if (label, token) not in seen:
+                        seen.add((label, token))
+                        matches.append(
+                            SecretMatch(
+                                pattern_name=label,
+                                secret_type=label,
+                                matched_text=token,
+                                entropy=round(self._calculate_entropy(decoded), 3),
+                                line_number=line_idx,
+                                confidence=0.9,
+                                fingerprint=_secret_fingerprint(token),
+                            )
+                        )
+
+            for hex_m in _HEX_CANDIDATE_RE.finditer(raw_line):
+                token = hex_m.group(0)
+                if len(token) % 2 != 0:
+                    continue
+                try:
+                    decoded = bytes.fromhex(token).decode("utf-8", errors="ignore")
+                except ValueError:
+                    continue
+                hit = self._match_first_pattern(decoded)
+                if hit and not _is_false_positive(hit[1]):
+                    label = f"hex_{hit[0]}"
+                    if (label, token) not in seen:
+                        seen.add((label, token))
+                        matches.append(
+                            SecretMatch(
+                                pattern_name=label,
+                                secret_type=label,
+                                matched_text=token,
+                                entropy=round(self._calculate_entropy(decoded), 3),
+                                line_number=line_idx,
+                                confidence=0.9,
+                                fingerprint=_secret_fingerprint(token),
+                            )
+                        )
+
+        return matches
+
+    def scan_event(self, event: Any) -> List[SecretMatch]:
+        payload = getattr(event, "payload", {})
+        serialized = json.dumps(payload, default=str)
+        return self.scan_text(serialized)
+
+
 def detect_secrets(text: str, source: str = "unknown") -> List[SecretMatch]:
-    """Scan text for secrets using pattern matching and entropy analysis.
-
-    Args:
-        text: Text content to scan.
-        source: Label for where the text came from.
-
-    Returns:
-        List of SecretMatch objects found.
-    """
+    """Scan text for secrets using pattern matching and entropy analysis."""
     matches: List[SecretMatch] = []
 
-    for pattern, secret_type in _SECRET_PATTERNS:
+    for name, pattern in PATTERNS:
         for match in pattern.finditer(text):
             raw = match.group(0)
             if _is_false_positive(raw):
                 continue
-            confidence = 0.9  # Pattern match = high confidence
+            confidence = 0.9
             matches.append(SecretMatch(
-                secret_type=secret_type,
-                matched_text=f"[REDACTED:{secret_type}]",
+                pattern_name=name,
+                secret_type=name,
+                matched_text=f"[REDACTED:{name}]",
                 confidence=confidence,
                 source=source,
                 length=len(raw),
@@ -236,8 +349,6 @@ def detect_secrets(text: str, source: str = "unknown") -> List[SecretMatch]:
                 fingerprint=_secret_fingerprint(raw),
             ))
 
-    # Entropy-based detection for unmatched high-entropy strings
-    # Look for assignments like KEY = "very-random-string"
     assign_pattern = re.compile(
         r'(?:key|secret|token|password|credential|auth)\s*[:=]\s*["\']([^"\']{16,})["\']',
         re.IGNORECASE,
@@ -249,10 +360,10 @@ def detect_secrets(text: str, source: str = "unknown") -> List[SecretMatch]:
         entropy = _shannon_entropy(value)
         if entropy > 4.0:
             fp = _secret_fingerprint(value)
-            # Check it wasn't already caught by pattern matching
             already_found = any(m.fingerprint == fp for m in matches)
             if not already_found:
                 matches.append(SecretMatch(
+                    pattern_name="high_entropy_secret",
                     secret_type="high_entropy_secret",
                     matched_text="[REDACTED:high_entropy_secret]",
                     confidence=min(0.5 + (entropy - 4.0) * 0.2, 0.95),
@@ -263,4 +374,3 @@ def detect_secrets(text: str, source: str = "unknown") -> List[SecretMatch]:
                 ))
 
     return matches
-

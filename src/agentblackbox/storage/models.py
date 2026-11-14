@@ -111,6 +111,12 @@ def _compute_event_hash(event: "Event", hmac_key: Optional[bytes] = None) -> str
     }
     raw = json.dumps(canonical, sort_keys=True, separators=(",", ":"), default=str)
     if hmac_key is None:
+        try:
+            from agentblackbox.analysis.key_provider import KeyProvider
+            hmac_key = KeyProvider.get_active_key_optional()
+        except Exception:
+            pass
+    if hmac_key is None:
         key_env = os.environ.get("ABB_HMAC_KEY")
         if key_env:
             hmac_key = key_env.encode("utf-8")

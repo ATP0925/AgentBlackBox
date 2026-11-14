@@ -117,6 +117,21 @@ _SESSION_MIGRATION_COLUMNS: List[Tuple[str, str]] = [
 ]
 
 
+def _get_active_hmac_key(explicit_key: Optional[bytes] = None) -> Optional[bytes]:
+    """Retrieve HMAC key from KeyProvider or fallback to ABB_HMAC_KEY."""
+    if explicit_key is not None:
+        return explicit_key
+    try:
+        from agentblackbox.analysis.key_provider import KeyProvider
+        k = KeyProvider.get_active_key_optional()
+        if k:
+            return k
+    except Exception:
+        pass
+    env_val = os.environ.get("ABB_HMAC_KEY")
+    return env_val.encode("utf-8") if env_val else None
+
+
 class EventStore:
     """SQLite-backed storage for events, sessions, snapshots, and alerts.
 
@@ -264,11 +279,7 @@ class EventStore:
         Returns:
             The same session (with id set).
         """
-        active_key = (
-            os.environ.get("ABB_HMAC_KEY").encode("utf-8")
-            if os.environ.get("ABB_HMAC_KEY")
-            else None
-        )
+        active_key = _get_active_hmac_key()
         is_keyed = 1 if (active_key or getattr(session, "is_keyed", False)) else 0
         v1_max_seq = getattr(session, "v1_max_seq", 0)
         meta_mac = getattr(session, "meta_mac", None)
@@ -455,9 +466,9 @@ class EventStore:
                             ),
                         )
 
-                    keyed_flag = 1 if os.environ.get("ABB_HMAC_KEY") else 0
-                    if keyed_flag:
-                        active_key = os.environ["ABB_HMAC_KEY"].encode("utf-8")
+                    active_key = _get_active_hmac_key()
+                    keyed_flag = 1 if active_key else 0
+                    if keyed_flag and active_key:
                         cur_mac = _compute_session_meta_mac(event.session_id, 1, 0, active_key)
                         conn.execute(
                             """UPDATE sessions SET total_events = total_events + 1,
@@ -541,10 +552,10 @@ class EventStore:
                     max_risks.get(event.session_id, 0.0), event.risk_score
                 )
 
-            keyed_flag = 1 if os.environ.get("ABB_HMAC_KEY") else 0
+            active_key = _get_active_hmac_key()
+            keyed_flag = 1 if active_key else 0
             for sid, cnt in counts.items():
-                if keyed_flag:
-                    active_key = os.environ["ABB_HMAC_KEY"].encode("utf-8")
+                if keyed_flag and active_key:
                     cur_mac = _compute_session_meta_mac(sid, 1, 0, active_key)
                     conn.execute(
                         """UPDATE sessions SET total_events = total_events + ?,
@@ -600,11 +611,7 @@ class EventStore:
         cp_file = checkpoint_path or (cp_dir / f"{session_id}.tip")
         cp_file.parent.mkdir(parents=True, exist_ok=True)
 
-        active_key = hmac_key or (
-            os.environ.get("ABB_HMAC_KEY").encode("utf-8")
-            if os.environ.get("ABB_HMAC_KEY")
-            else None
-        )
+        active_key = _get_active_hmac_key(hmac_key)
         sig: Optional[str] = None
         if active_key:
             import hmac
@@ -680,7 +687,7 @@ class EventStore:
         is_keyed = bool(session_row["is_keyed"]) if session_row and "is_keyed" in s_keys and session_row["is_keyed"] is not None else False
         stored_meta_mac = session_row["meta_mac"] if session_row and "meta_mac" in s_keys and session_row["meta_mac"] else None
 
-        active_key = hmac_key or (os.environ.get("ABB_HMAC_KEY").encode("utf-8") if os.environ.get("ABB_HMAC_KEY") else None)
+        active_key = _get_active_hmac_key(hmac_key)
 
         if require_keyed and not active_key:
             return ChainVerificationResult(
