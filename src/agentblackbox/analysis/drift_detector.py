@@ -69,20 +69,14 @@ class ArchitecturalDriftDetector:
         self.workspace_root = workspace_root or Path.cwd()
         self.config_path = config_path or (self.workspace_root / ".agentblackbox" / "architecture.json")
         self.blob_store = blob_store
-        self.config = self._load_or_create_config()
+        self.config = self._load_config()
 
-    def _load_or_create_config(self) -> Dict[str, Any]:
-        if self.config_path.exists():
+    def _load_config(self) -> Dict[str, Any]:
+        if self.config_path and self.config_path.exists():
             try:
                 return json.loads(self.config_path.read_text(encoding="utf-8"))
-            except Exception:
-                pass
-        # Auto-generate sensible default config
-        try:
-            self.config_path.parent.mkdir(parents=True, exist_ok=True)
-            self.config_path.write_text(json.dumps(DEFAULT_ARCHITECTURE_CONFIG, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+            except (json.JSONDecodeError, OSError):
+                return DEFAULT_ARCHITECTURE_CONFIG
         return DEFAULT_ARCHITECTURE_CONFIG
 
     def check_file(

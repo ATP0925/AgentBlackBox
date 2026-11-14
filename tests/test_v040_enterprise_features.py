@@ -38,6 +38,17 @@ def enable_ephemeral_test_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ABB_API_TOKEN", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def isolate_bridge_storage(tmp_path: Path) -> Any:
+    db_file = tmp_path / "test_events.db"
+    blobs_folder = tmp_path / "test_blobs"
+    app.state.event_store = EventStore(db_file)
+    app.state.blob_store = BlobStore(blobs_folder)
+    yield
+    app.state.event_store = None
+    app.state.blob_store = None
+
+
 # ==============================================================================
 # 1. COMPLIANCE TRACKER TESTS
 # ==============================================================================
