@@ -17,6 +17,12 @@ env/
 .env
 .env.*
 
+# Node & IDE Extension
+node_modules/
+ide-extension/node_modules/
+ide-extension/dist/
+.vscode-test/
+
 # Testing & caches
 .pytest_cache/
 .mypy_cache/

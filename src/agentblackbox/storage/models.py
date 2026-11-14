@@ -145,20 +145,26 @@ class EventType:
     PROCESS_SPAWN = "process_spawn"
     PROCESS_EXIT = "process_exit"
     SECRET_DETECTED = "secret_detected"
+    REFACTOR_ROLLBACK = "refactor_rollback"
+    COMPLIANCE_ALERT = "compliance_alert"
+    DRIFT_ALERT = "drift_alert"
 
     ALL = [
         FILE_CREATE, FILE_MODIFY, FILE_DELETE, FILE_RENAME,
         CMD_EXECUTE, CMD_OUTPUT,
         GIT_ADD, GIT_COMMIT, GIT_PUSH, GIT_FORCE_PUSH, GIT_RESET,
         PROCESS_SPAWN, PROCESS_EXIT,
-        SECRET_DETECTED,
+        SECRET_DETECTED, REFACTOR_ROLLBACK, COMPLIANCE_ALERT, DRIFT_ALERT,
     ]
 
 
 class Severity:
     """Enumeration of severity levels."""
     INFO = "info"
+    LOW = "low"
+    MEDIUM = "medium"
     WARNING = "warning"
+    HIGH = "high"
     DANGER = "danger"
     CRITICAL = "critical"
 

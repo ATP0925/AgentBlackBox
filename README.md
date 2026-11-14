@@ -45,6 +45,18 @@ AgentBlackBox protects your codebase across two phases of autonomous AI coding (
 
 ---
 
+## 🛡️ Feature Architecture Matrix (Why This Beats SonarQube, Snyk & Copilot)
+
+| Capability | SonarQube / Snyk | GitHub Copilot | AgentBlackBox v0.4.0 + Antigravity Extension |
+| :--- | :--- | :--- | :--- |
+| **Cryptographic Audit Trail** | None (static point-in-time scan) | None (ephemeral chat logs) | **HMAC-SHA256 hash chain** + signed `.tip` checkpoints in `.agentblackbox/` |
+| **Context-Aware Compliance** | Static rule matching only | No compliance enforcement | **Links prompt + tool call + file diff** to `SOC2-CC6.1` / `OWASP-LLM06` with hash proofs |
+| **Real-Time Architectural Drift** | Post-commit / CI-only | Can accidentally violate layer rules | **In-editor AST & layer boundary check** (`drift_detector.py`) against `.agentblackbox/architecture.json` |
+| **Legacy Refactor Safety** | Shows code smells only | Edits files without rollback guarantee | **Auto-snapshots to `.agentblackbox/blobs/<sha256>`** + AST signature diff + 1-click IDE rollback |
+| **CI/CD Tamper & Risk Gate** | Scans code only, blind to agent actions | No local flight verification | **`abb ci-gate` CLI** blocks PRs if hash chain is tampered, risk > `7.0`, or SARIF has blockers |
+
+---
+
 ## 🚀 Quickstart
 
 ### Prerequisites
@@ -89,6 +101,18 @@ abb analyze . --min-severity medium
 # 7. Enable AI reasoning layer (Claude, Codex, Gemini, or Offline)
 $env:GEMINI_API_KEY="your-api-key"
 abb review --ai gemini
+
+# 8. Cryptographic & Policy CI/CD Gate
+abb ci-gate --max-risk 7.0 --sarif-out abb-results.sarif
+
+# 9. Start Google Antigravity IDE / VS Code Bridge Server
+$env:ABB_API_TOKEN="abb-local-dev-token"
+abb ide-bridge --host 127.0.0.1 --port 8765
+
+# 10. (Optional) Build the IDE Extension
+cd ide-extension
+npm install
+npm run compile
 
 # Or with OpenAI Codex / Anthropic Claude:
 # $env:OPENAI_API_KEY="your-api-key"; abb review --ai codex

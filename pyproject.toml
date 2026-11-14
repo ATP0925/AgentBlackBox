@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "abb-recorder"
-version = "0.3.0"
+version = "0.4.0"
 description = "Local-first audit & replay flight recorder for AI coding agents — automatically redact secrets, track file & command diffs, score command risk, and verify session timelines."
 readme = "README.md"
 license = "MIT"

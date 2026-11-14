@@ -29,11 +29,13 @@ app.add_middleware(
 
 # Import routes with optional bearer-token protection
 from agentblackbox.api.routes import sessions, events, timeline  # noqa: E402
+from agentblackbox.api import bridge  # noqa: E402
 
 _auth_deps = [Depends(require_api_token)]
 app.include_router(sessions.router, prefix="/api/v1", tags=["sessions"], dependencies=_auth_deps)
 app.include_router(events.router, prefix="/api/v1", tags=["events"], dependencies=_auth_deps)
 app.include_router(timeline.router, prefix="/api/v1", tags=["timeline"], dependencies=_auth_deps)
+app.include_router(bridge.router, prefix="/api/v1", tags=["bridge"], dependencies=_auth_deps)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -94,3 +96,20 @@ async def websocket_live(websocket: WebSocket) -> None:
                 await websocket.send_json({"type": "pong"})
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
+
+
+@app.websocket("/ws/stream")
+async def websocket_stream(websocket: WebSocket) -> None:
+    """WebSocket endpoint for IDE extension live event streaming."""
+    if not verify_ws_token(websocket):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    await bridge.manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_json({"type": "pong"})
+    except WebSocketDisconnect:
+        bridge.manager.disconnect(websocket)

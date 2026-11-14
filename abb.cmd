@@ -1,2 +1,3 @@
 @echo off
-python -m agentblackbox %*
+"python" -m agentblackbox %*
+

@@ -8,9 +8,11 @@ Write-Host "==========================================================" -Foregro
 $pythonCmd = $null
 if (Get-Command python -ErrorAction SilentlyContinue) {
     $pythonCmd = "python"
-} elseif (Get-Command py -ErrorAction SilentlyContinue) {
+}
+elseif (Get-Command py -ErrorAction SilentlyContinue) {
     $pythonCmd = "py"
-} else {
+}
+else {
     Write-Host "`n❌ Error: Python is not installed or not in PATH!" -ForegroundColor Red
     Write-Host "Please install Python 3.10+ from https://python.org or the Microsoft Store." -ForegroundColor Yellow
     exit 1
@@ -97,7 +99,8 @@ try {
             } catch {}
         }
     }
-} catch {}
+}
+catch {}
 
 # Create abb function in current session so it works immediately even if Application Control blocks abb.exe
 function global:abb { & $pythonCmd -m agentblackbox @args }

@@ -716,7 +716,6 @@ def review(
     if not exit_zero and report.has_critical_or_high:
         raise typer.Exit(1)
 
-
 @app.command()
 def analyze(
     path: Optional[Path] = typer.Argument(
@@ -818,6 +817,178 @@ def analyze(
 
     if not exit_zero and report.has_critical_or_high:
         raise typer.Exit(1)
+
+
+@app.command("ci-gate")
+def ci_gate(
+    max_risk: float = typer.Option(
+        7.0,
+        "--max-risk",
+        help="Maximum allowable cumulative or single-event risk score before blocking.",
+    ),
+    fail_on_drift: bool = typer.Option(
+        True,
+        "--fail-on-drift/--no-fail-on-drift",
+        help="Fail if any architectural drift violations are detected.",
+    ),
+    fail_on_compliance: bool = typer.Option(
+        True,
+        "--fail-on-compliance/--no-fail-on-compliance",
+        help="Fail if any compliance violations (SOC2, OWASP, GDPR) are detected.",
+    ),
+    sarif_out: Optional[Path] = typer.Option(
+        None,
+        "--sarif-out",
+        help="Write SARIF v2.1.0 report for GitHub Advanced Security / Code Scanning.",
+    ),
+    session: Optional[str] = typer.Option(
+        None,
+        "--session",
+        "-s",
+        help="Target session ID to evaluate (defaults to most recent session).",
+    ),
+    workspace: Optional[Path] = typer.Option(
+        None,
+        "--workspace",
+        "-w",
+        help="Repository workspace root directory.",
+    ),
+) -> None:
+    """Evaluate cryptographic integrity, agent risk, compliance, and drift in CI/CD pre-push gate."""
+    from agentblackbox.storage.export import export_sarif
+
+    ws = (workspace or Path.cwd()).resolve()
+    db_path = ws / ".agentblackbox" / "events.db"
+
+    console.print("[bold cyan]══════════════════════════════════════════════════════════[/]")
+    console.print("[bold cyan]   AgentBlackBox CI/CD Cryptographic & Policy Gate        [/]")
+    console.print("[bold cyan]══════════════════════════════════════════════════════════[/]")
+
+    if not db_path.exists():
+        console.print(f"[dim]Note: No event database found at {db_path}. Initializing clean state...[/]")
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        store = EventStore(db_path)
+        sess = store.create_session(Session(id="ci_clean_run", name="CI Clean Baseline", workspace_path=str(ws)))
+        target_session_id = sess.id
+    else:
+        store = EventStore(db_path)
+        if session:
+            sess = store.get_session(session)
+            target_session_id = sess.id if sess else session
+        else:
+            sessions = store.list_sessions(limit=1)
+            target_session_id = sessions[0].id if sessions else "default_session"
+
+    blocked_reasons: List[str] = []
+
+    # 1. Verify Cryptographic Hash Chain
+    verify_res = store.verify_chain(target_session_id, verify_blobs=False)
+    chain_intact = verify_res.valid
+    if not chain_intact:
+        blocked_reasons.append(
+            f"Tamper detected in session '{target_session_id}' at seq={verify_res.broken_at_seq}: {verify_res.reason}"
+        )
+
+    # 2. Query events & evaluate policies
+    events = store.query_events(session_id=target_session_id, limit=50000)
+    max_observed_risk = max([e.risk_score for e in events] or [0.0])
+
+    if max_observed_risk >= max_risk:
+        blocked_reasons.append(
+            f"Highest event risk score ({max_observed_risk:.1f}) exceeds maximum threshold ({max_risk:.1f})"
+        )
+
+    compliance_findings_count = sum(
+        len(ev.payload.get("compliance_findings", []))
+        for ev in events
+        if isinstance(ev.payload, dict) and isinstance(ev.payload.get("compliance_findings"), list)
+    )
+    drift_violations_count = sum(
+        len(ev.payload.get("drift_violations", []))
+        for ev in events
+        if isinstance(ev.payload, dict) and isinstance(ev.payload.get("drift_violations"), list)
+    )
+
+    if fail_on_compliance and compliance_findings_count > 0:
+        blocked_reasons.append(
+            f"{compliance_findings_count} compliance finding(s) detected (SOC2, OWASP, GDPR)"
+        )
+
+    if fail_on_drift and drift_violations_count > 0:
+        blocked_reasons.append(
+            f"{drift_violations_count} architectural drift violation(s) detected against contract"
+        )
+
+    # 3. Write SARIF report if requested
+    if sarif_out:
+        export_sarif(store, session_id=target_session_id, output_path=sarif_out)
+        console.print(f"[dim]SARIF v2.1.0 report exported to: {sarif_out}[/]")
+
+    # 4. Render Rich Table
+    table = Table(title=f"CI Gate Audit Summary (Session: {target_session_id})")
+    table.add_column("Policy / Check", style="cyan")
+    table.add_column("Observed Value", style="white")
+    table.add_column("Rule / Threshold", style="dim")
+    table.add_column("Status", style="bold")
+
+    table.add_row(
+        "HMAC-SHA256 Hash Chain",
+        "INTACT" if chain_intact else "TAMPERED",
+        "Sequence continuity & SHA256",
+        "[green]PASS[/]" if chain_intact else "[red]FAIL[/]",
+    )
+    table.add_row(
+        "Maximum Event Risk Score",
+        f"{max_observed_risk:.1f}",
+        f"<= {max_risk:.1f}",
+        "[green]PASS[/]" if max_observed_risk < max_risk else "[red]FAIL[/]",
+    )
+    table.add_row(
+        "Context Compliance Findings",
+        str(compliance_findings_count),
+        "0 allowed" if fail_on_compliance else "Advisory",
+        "[green]PASS[/]" if (not fail_on_compliance or compliance_findings_count == 0) else "[red]FAIL[/]",
+    )
+    table.add_row(
+        "Architectural Drift Violations",
+        str(drift_violations_count),
+        "0 allowed" if fail_on_drift else "Advisory",
+        "[green]PASS[/]" if (not fail_on_drift or drift_violations_count == 0) else "[red]FAIL[/]",
+    )
+
+    console.print(table)
+
+    if blocked_reasons:
+        console.print("\n[bold red]❌ CI GATE REJECTED:[/] PR or Push blocked due to the following violations:")
+        for r in blocked_reasons:
+            console.print(f"  [red]• {r}[/]")
+        raise typer.Exit(1)
+
+    console.print("\n[bold green]✅ CI GATE APPROVED:[/] All cryptographic, risk, compliance, and architectural checks passed.")
+
+
+@app.command("ide-bridge")
+def ide_bridge(
+    host: str = typer.Option("127.0.0.1", "--host", "-h", help="Bind host address"),
+    port: int = typer.Option(8765, "--port", "-p", help="Local port to bind"),
+    token: Optional[str] = typer.Option(None, "--token", help="Bearer API authentication token"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", "-w", help="Workspace root path"),
+) -> None:
+    """Start the local FastAPI + WebSocket bridge server for Google Antigravity IDE / VS Code."""
+    ws = (workspace or Path.cwd()).resolve()
+    if token:
+        os.environ["ABB_API_TOKEN"] = token
+    elif not os.environ.get("ABB_API_TOKEN"):
+        generated_token = secrets.token_urlsafe(24)
+        os.environ["ABB_API_TOKEN"] = generated_token
+        console.print(f"[bold yellow]🔒 Generated IDE Bridge API token:[/] [cyan]{generated_token}[/]")
+    else:
+        console.print("[dim]Using configured ABB_API_TOKEN from environment.[/]")
+
+    console.print(f"[bold green]🚀 AgentBlackBox IDE Bridge active[/] on http://{host}:{port}")
+    console.print(f"   [dim]Workspace:[/] {ws}")
+    console.print(f"   [dim]WebSocket:[/] ws://{host}:{port}/ws/stream")
+    uvicorn.run("agentblackbox.api.main:app", host=host, port=port, log_level="info")
 
 
 if __name__ == "__main__":

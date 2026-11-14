@@ -1,0 +1,87 @@
+{
+  "name": "agentblackbox-ide",
+  "displayName": "AgentBlackBox — AI Flight Recorder & Drift Guard",
+  "description": "Local-first cryptographic AI flight recorder, compliance enforcer, and architectural drift guard for Google Antigravity IDE and VS Code.",
+  "version": "0.4.0",
+  "publisher": "atp0925",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Security",
+    "Linters",
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished",
+    "workspaceContains:.agentblackbox"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "agentblackbox.startDaemon",
+        "title": "AgentBlackBox: Start Local Flight Recorder Bridge"
+      },
+      {
+        "command": "agentblackbox.verifyChain",
+        "title": "AgentBlackBox: Verify Cryptographic Hash Chain"
+      },
+      {
+        "command": "agentblackbox.scanCurrentFile",
+        "title": "AgentBlackBox: Run Drift, Compliance & Secret Audit on Current File"
+      },
+      {
+        "command": "agentblackbox.rollbackFile",
+        "title": "AgentBlackBox: Rollback File to Pre-Agent Snapshot"
+      },
+      {
+        "command": "agentblackbox.openFlightDeck",
+        "title": "AgentBlackBox: Open Live AI Flight Deck Panel"
+      },
+      {
+        "command": "agentblackbox.exportSarif",
+        "title": "AgentBlackBox: Export SARIF v2.1.0 Compliance Report"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "agentblackbox-sidebar",
+          "title": "AgentBlackBox",
+          "icon": "resources/shield.svg"
+        }
+      ]
+    },
+    "views": {
+      "agentblackbox-sidebar": [
+        {
+          "id": "agentblackbox.timelineView",
+          "name": "Timeline & Risk Feed"
+        },
+        {
+          "id": "agentblackbox.driftView",
+          "name": "Architectural Drift & Compliance"
+        },
+        {
+          "id": "agentblackbox.snapshotsView",
+          "name": "Blob Snapshots & Rollback"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.5.10",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}
