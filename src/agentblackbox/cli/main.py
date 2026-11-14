@@ -27,6 +27,9 @@ from agentblackbox.daemon.core import (
     start_background_daemon,
     stop_background_daemon,
 )
+from agentblackbox.analysis.alerting import maybe_create_alert
+from agentblackbox.analysis.pattern_matcher import classify_event
+from agentblackbox.analysis.risk_scorer import score_event
 from agentblackbox.integrations.git_client import GitClient
 from agentblackbox.models.finding import Severity
 from agentblackbox.reporting.terminal import render_terminal_report
@@ -258,17 +261,41 @@ def run(
 
 @app.command("hook-install")
 def hook_install(
-    agent: str = typer.Option("all", "--agent", "-a", help="Target agent: claude-code, codex, cursor, antigravity, git, or all"),
+    agent: str = typer.Option("claude", "--agent", "-a", help="Target agent: claude, codex, cursor, gemini, or all"),
+    is_global: bool = typer.Option(False, "--global/--project", help="Install hook globally in user home or locally in project workspace"),
     workspace: Optional[Path] = typer.Option(None, "--workspace", "-w"),
 ) -> None:
-    """Install agent attribution and safety hooks across Claude Code, Codex, Cursor, Antigravity, and Git."""
+    """Install agent attribution and safety hooks across Claude Code, Codex, Cursor, Gemini, and Git."""
     ws = workspace or Path.cwd()
     try:
-        installed = install_agent_hook(ws, agent=agent)
+        installed = install_agent_hook(ws, agent=agent, is_global=is_global)
         for ag, path in installed.items():
             console.print(f"[bold green]✅ Installed {ag} hook[/] at [cyan]{path}[/]")
     except ValueError as exc:
         cli_abort(str(exc))
+
+
+@app.command("hook-verify")
+def hook_verify(
+    is_global: bool = typer.Option(False, "--global/--project", help="Verify global user hooks instead of workspace project hooks"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", "-w"),
+) -> None:
+    """Verify that installed agent hooks still exist and have not been removed or disabled."""
+    from agentblackbox.watchers.agent_hooks import verify_agent_hooks
+
+    ws = (workspace or Path.cwd()).resolve()
+    results = verify_agent_hooks(ws, is_global=is_global)
+
+    table = Table(title=f"Agent Hook Verification ({'Global' if is_global else 'Project Scope'})")
+    table.add_column("Agent", style="cyan")
+    table.add_column("Config File", style="white")
+    table.add_column("Status", style="bold")
+
+    for agent_name, info in results.items():
+        status_str = f"[bold green]{info['status']}[/]" if info["status"] == "OK" else f"[bold red]{info['status']}[/]"
+        table.add_row(agent_name, str(info["path"]), status_str)
+
+    console.print(table)
 
 
 @app.command("hook-ingest")
@@ -284,11 +311,11 @@ def hook_ingest(
 
     target_sid = session_id
     if not target_sid:
-        active = store.get_active_session()
-        if active:
-            target_sid = active.id
+        sessions = store.list_sessions(limit=1)
+        if sessions and sessions[0].status == "recording":
+            target_sid = sessions[0].id
         else:
-            sess = Session(workspace_path=str(ws), name="ide-hooks", agent_hint=source)
+            sess = Session(workspace_path=str(ws), name="agent-hooks", agent_hint=source)
             store.create_session(sess)
             target_sid = sess.id
 
@@ -325,11 +352,17 @@ def hook_ingest(
 
     ingested = 0
     for rev in raw_events:
-        ev_type = (
-            EventType.CMD_EXECUTE if rev.get("event_type") == "terminal_cmd"
-            else (EventType.FILE_MODIFY if rev.get("event_type") in ("file_edit", "mcp_call")
-                  else EventType.API_REQUEST)
-        )
+        raw_type = rev.get("event_type")
+        tool_name = str(rev.get("tool_name") or "")
+        if raw_type in ("terminal_cmd", EventType.CMD_EXECUTE):
+            ev_type = EventType.CMD_EXECUTE
+        elif raw_type in ("mcp_call", EventType.PROCESS_SPAWN) or "mcp" in tool_name.lower():
+            ev_type = EventType.PROCESS_SPAWN
+        elif raw_type in ("file_edit", EventType.FILE_MODIFY):
+            ev_type = EventType.FILE_MODIFY
+        else:
+            ev_type = EventType.PROCESS_SPAWN
+
         ev = Event(
             session_id=target_sid,
             event_type=ev_type,
@@ -341,7 +374,10 @@ def hook_ingest(
             },
             tags=[f"agent:{rev.get('agent_source')}", f"tool:{rev.get('tool_name')}"],
         )
-        store.insert_event(ev)
+        classify_event(ev)
+        score_event(ev)
+        stored = store.insert_event(ev)
+        maybe_create_alert(store, stored)
         ingested += 1
 
     console.print(f"[bold green]✅ Ingested {ingested} normalized events[/] into session [cyan]{target_sid}[/]")

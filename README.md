@@ -180,7 +180,8 @@ abb review --ai gemini
 | `abb stop` | Gracefully drain events, stop daemon, and write signed head checkpoint. |
 | `abb status` | Show active daemon PID, session ID, and recorded event count. |
 | `abb run -- <cmd>` | Execute a command while capturing redacted stdout/stderr and attribution. |
-| `abb hook-install` | Install Claude Code `PreToolUse` attribution hook into settings. |
+| `abb hook-install [--agent <agent>]` | Install agent hooks (`claude`, `codex`, `cursor`, `gemini`, `all`) with `--global` / `--project`. |
+| `abb hook-verify [--global]` | Verify installed hooks across all supported coding agent configurations. |
 | `abb sessions` | List recorded sessions with event counts and risk summaries. |
 | `abb search <query>` | Search redacted event payloads, file paths, and command histories. |
 | `abb blame <file>` | Show reverse-chronological modification history and agent attribution. |
@@ -189,6 +190,46 @@ abb review --ai gemini
 | `abb export-checkpoint <id>` | Export head-tip checkpoint JSON to an external file or stdout. |
 | `abb report <session_id>` | Export standalone timeline report (`--format html`, `json`, or `csv`). |
 | `abb serve` | Launch localhost (`127.0.0.1`) FastAPI & WebSocket inspector. |
+
+---
+
+## 🤖 Multi-Agent Hook Integration
+
+AgentBlackBox integrates natively into AI coding agent workflows via configuration hooks. When an agent invokes a tool (shell command, file modification, web search, MCP call), the hook forwards the payload to `abb hook-ingest`, recording the action in the cryptographic HMAC hash chain.
+
+### Agent Configuration Matrix
+
+| Agent | Scope | Configuration File | Install Command |
+| :--- | :--- | :--- | :--- |
+| **Claude Code** | Project | `.claude/settings.local.json` | `abb hook-install --agent claude` |
+| | Global | `~/.claude/settings.json` | `abb hook-install --agent claude --global` |
+| **Codex CLI** | Project | `.codex/hooks.json` | `abb hook-install --agent codex` |
+| | Global | `~/.codex/hooks.json` | `abb hook-install --agent codex --global` |
+| **Cursor** | Project | `.cursor/hooks.json` | `abb hook-install --agent cursor` |
+| | Global | `~/.cursor/hooks.json` | `abb hook-install --agent cursor --global` |
+| **Gemini CLI** | Project | `.gemini/settings.json` | `abb hook-install --agent gemini` |
+| | Global | `~/.gemini/settings.json` | `abb hook-install --agent gemini --global` |
+| **All Agents** | Both | All supported configuration files | `abb hook-install --agent all [--global]` |
+
+### Hook Verification
+
+Check the operational health and presence of all hooks across your project or global environment:
+```bash
+# Verify current project hooks
+abb hook-verify
+
+# Verify global configuration hooks
+abb hook-verify --global
+```
+
+---
+
+## ⚠️ Known Limitations
+
+1. **Pre-Execution Intent vs. Post-Execution Results**: Agent hooks record tool invocation intent (`PreToolUse`, `beforeShellExecution`, `BeforeTool`), capturing commands and file paths before execution. They do not capture stdout output or subprocess exit codes from the agent's internal runner.
+2. **Codex CLI File Edit Tracking**: Codex hooks capture shell actions directly; for full AST-level tracking of edits performed by Codex, run `abb start` alongside it to enable the background `FileSystemWatcher`.
+3. **Selective Read Logging**: To prevent log explosion and high storage volume during repository indexing, only reads to sensitive targets (`.env`, `.pem`, `id_rsa`, `.ssh/`, `credentials`, `.aws/`) are stored in the flight chain; non-sensitive file reads are skipped.
+4. **Agent Hook Failure Isolation**: Agent hooks run fail-safe (`exit 0` with silent stdout). Any hook execution or serialization error is recorded to `<workspace>/.agentblackbox/hook_errors.log` without breaking or aborting the host agent's operation.
 
 ---
 

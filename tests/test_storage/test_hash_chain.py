@@ -880,6 +880,83 @@ class TestHashChainAndAttribution:
         assert "Tail truncation detected" in (res.reason or "")
         assert "5 events" in (res.reason or "")
 
+    def test_live_session_51_events_checkpoint_valid(self, tmp_path: Path) -> None:
+        """A live session with 51 events passes verification when checkpoint is at seq 50."""
+        db_path = tmp_path / "live_51.db"
+        store = EventStore(db_path, checkpoint_interval=50)
+        sess = Session(workspace_path=str(tmp_path), name="live-51")
+        store.create_session(sess)
+
+        for i in range(51):
+            store.insert_event(Event(
+                session_id=sess.id,
+                event_type=EventType.CMD_EXECUTE,
+                payload={"index": i},
+            ))
+
+        cp_file = store.db_path.parent / "checkpoints" / f"{sess.id}.tip"
+        assert cp_file.exists()
+        cp_data = json.loads(cp_file.read_text(encoding="utf-8"))
+        assert cp_data["last_seq"] == 50
+
+        # Verify chain passes with head (seq 51) ahead of checkpoint (seq 50)
+        res = store.verify_chain(sess.id, checkpoint_path=cp_file)
+        assert res.valid is True
+        assert res.total_events == 51
+
+    def test_checkpoint_delete_events_below_checkpoint_invalid(self, tmp_path: Path) -> None:
+        """Deleting events below the checkpoint seq triggers tampering detection."""
+        db_path = tmp_path / "delete_below.db"
+        store = EventStore(db_path, checkpoint_interval=50)
+        sess = Session(workspace_path=str(tmp_path))
+        store.create_session(sess)
+
+        for i in range(50):
+            store.insert_event(Event(
+                session_id=sess.id,
+                event_type=EventType.CMD_EXECUTE,
+                payload={"index": i},
+            ))
+
+        cp_file = store.db_path.parent / "checkpoints" / f"{sess.id}.tip"
+        assert cp_file.exists()
+
+        # Delete events from seq 41..50
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute("DELETE FROM events WHERE seq > 40")
+            conn.commit()
+
+        res = store.verify_chain(sess.id, checkpoint_path=cp_file)
+        assert res.valid is False
+        assert "Tail truncation detected" in (res.reason or "")
+
+    def test_checkpoint_edit_event_before_checkpoint_invalid(self, tmp_path: Path) -> None:
+        """Editing an event before the checkpoint triggers tampering detection."""
+        db_path = tmp_path / "edit_before.db"
+        store = EventStore(db_path, checkpoint_interval=50)
+        sess = Session(workspace_path=str(tmp_path))
+        store.create_session(sess)
+
+        for i in range(50):
+            store.insert_event(Event(
+                session_id=sess.id,
+                event_type=EventType.CMD_EXECUTE,
+                payload={"index": i},
+            ))
+
+        cp_file = store.db_path.parent / "checkpoints" / f"{sess.id}.tip"
+        assert cp_file.exists()
+
+        # Tamper payload at seq 25
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute("UPDATE events SET payload = '{\"hacked\": true}' WHERE seq = 25")
+            conn.commit()
+
+        res = store.verify_chain(sess.id, checkpoint_path=cp_file)
+        assert res.valid is False
+        assert res.broken_at_seq == 25
+
+
 
 
 

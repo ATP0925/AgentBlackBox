@@ -135,6 +135,7 @@ class EventType:
     FILE_MODIFY = "file_modify"
     FILE_DELETE = "file_delete"
     FILE_RENAME = "file_rename"
+    FILE_READ = "file_read"
     CMD_EXECUTE = "cmd_execute"
     CMD_OUTPUT = "cmd_output"
     GIT_ADD = "git_add"
@@ -150,7 +151,7 @@ class EventType:
     DRIFT_ALERT = "drift_alert"
 
     ALL = [
-        FILE_CREATE, FILE_MODIFY, FILE_DELETE, FILE_RENAME,
+        FILE_CREATE, FILE_MODIFY, FILE_DELETE, FILE_RENAME, FILE_READ,
         CMD_EXECUTE, CMD_OUTPUT,
         GIT_ADD, GIT_COMMIT, GIT_PUSH, GIT_FORCE_PUSH, GIT_RESET,
         PROCESS_SPAWN, PROCESS_EXIT,

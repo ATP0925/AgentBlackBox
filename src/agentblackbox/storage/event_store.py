@@ -841,14 +841,24 @@ class EventStore:
                         broken_at_seq=len(rows),
                         reason=f"Tail truncation detected: checkpoint tip recorded {expected_count} events ({cp.get('head_hash', '')[:10]}...), but database only contains {len(rows)} events",
                     )
-                if rows and cp.get("head_hash") and rows[-1]["event_hash"] != cp["head_hash"]:
-                    return ChainVerificationResult(
-                        session_id=session_id,
-                        valid=False,
-                        total_events=len(rows),
-                        broken_at_seq=len(rows),
-                        reason=f"Tip mismatch: database head hash ({rows[-1]['event_hash'][:10]}...) does not match checkpoint tip ({cp['head_hash'][:10]}...)",
-                    )
+                if rows and cp.get("head_hash"):
+                    cp_row = next((r for r in rows if r["seq"] == expected_count), None)
+                    if cp_row is None:
+                        return ChainVerificationResult(
+                            session_id=session_id,
+                            valid=False,
+                            total_events=len(rows),
+                            broken_at_seq=expected_count,
+                            reason=f"Checkpoint seq {expected_count} missing from database events",
+                        )
+                    if cp_row["event_hash"] != cp["head_hash"]:
+                        return ChainVerificationResult(
+                            session_id=session_id,
+                            valid=False,
+                            total_events=len(rows),
+                            broken_at_seq=expected_count,
+                            reason=f"Tip mismatch: event hash at seq {expected_count} ({cp_row['event_hash'][:10]}...) does not match checkpoint tip ({cp['head_hash'][:10]}...)",
+                        )
                 checkpoint_notes = "checkpoint tip verified (signed)" if cp.get("signature") else "checkpoint tip verified"
             except Exception as e:
                 logger.warning("checkpoint_read_error", error=str(e))

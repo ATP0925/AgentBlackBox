@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 import structlog
 
+from agentblackbox.analysis.alerting import maybe_create_alert
 from agentblackbox.analysis.key_provider import KeyProvider, ENV_HMAC_KEY
 from agentblackbox.analysis.pattern_matcher import classify_event
 from agentblackbox.analysis.risk_scorer import score_event
@@ -292,14 +293,7 @@ class BlackBoxDaemon:
 
         with self._lock:
             stored = self.store.insert_event(event)
-            if (stored.risk_score >= 5.0 or "secret" in stored.tags) and stored.id is not None:
-                alert_type = "secret_leak" if "secret" in stored.tags else "high_risk_event"
-                self.store.create_alert(Alert(
-                    event_id=stored.id,
-                    session_id=self.session_id,
-                    alert_type=alert_type,
-                    description=f"{stored.event_type} (risk {stored.risk_score}) on {stored.source_path or '-'}",
-                ))
+            maybe_create_alert(self.store, stored)
         return stored
 
     def start(self) -> DaemonState:
