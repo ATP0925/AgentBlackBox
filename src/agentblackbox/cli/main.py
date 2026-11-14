@@ -649,27 +649,6 @@ def review(
     repo_root = workspace or Path.cwd()
     git_client = GitClient(repo_root)
 
-    if not git_client.is_git_repository():
-        console.print(f"[bold red]Error:[/] '{repo_root}' is not a valid git repository.")
-        raise typer.Exit(1)
-
-    # Determine diff
-    if target:
-        if base:
-            raw_diff = git_client.get_branch_diff(base=base, head=target)
-        elif ".." in target:
-            parts = target.split("..", 1)
-            raw_diff = git_client.get_branch_diff(base=parts[0], head=parts[1])
-        else:
-            raw_diff = git_client.get_commit_diff(target)
-    else:
-        # Working tree changes
-        raw_diff = git_client.get_working_tree_diff(staged=False, untracked=True)
-        if not raw_diff.strip():
-            raw_diff = git_client.get_working_tree_diff(staged=True)
-
-    git_diff = parse_unified_diff(raw_diff)
-
     sev = Severity.from_str(min_severity)
     config = ReviewConfig(
         min_severity=sev,
@@ -679,7 +658,28 @@ def review(
         max_context_tokens=max_tokens,
     )
     engine = ReviewEngine(config=config, git_client=git_client)
-    report = engine.review_diff(git_diff, repo_root=repo_root)
+
+    if not git_client.is_git_repository():
+        console.print(f"[dim]Note: '{repo_root}' is not a git repository. Performing repository static analysis...[/]")
+        report = engine.analyze_repository(repo_root)
+    else:
+        # Determine diff
+        if target:
+            if base:
+                raw_diff = git_client.get_branch_diff(base=base, head=target)
+            elif ".." in target:
+                parts = target.split("..", 1)
+                raw_diff = git_client.get_branch_diff(base=parts[0], head=parts[1])
+            else:
+                raw_diff = git_client.get_commit_diff(target)
+        else:
+            # Working tree changes
+            raw_diff = git_client.get_working_tree_diff(staged=False, untracked=True)
+            if not raw_diff.strip():
+                raw_diff = git_client.get_working_tree_diff(staged=True)
+
+        git_diff = parse_unified_diff(raw_diff)
+        report = engine.review_diff(git_diff, repo_root=repo_root)
 
     # Handle output
     fmt = format.lower()

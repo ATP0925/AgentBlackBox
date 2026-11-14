@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = "Continue"
+$ErrorActionPreference = "Continue"
 
 Write-Host "==========================================================" -ForegroundColor Cyan
 Write-Host "   AgentBlackBox - Autonomous AI Flight Recorder & Review  " -ForegroundColor Green
