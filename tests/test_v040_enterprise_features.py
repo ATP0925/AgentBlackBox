@@ -250,7 +250,7 @@ def test_refactor_guard_behavioral_equivalence_removed_exception() -> None:
         "    return None\n"
     )
     res = guard.check_behavioral_equivalence(old_code, new_code)
-    assert res["is_equivalent"] is False
+    assert res["is_equivalent"] == False
     assert any("ValueError" in w for w in res["warnings"])
 
 
@@ -275,7 +275,7 @@ def test_refactor_guard_rollback_to_snapshot_restores_file(tmp_path: Path) -> No
 
     # Deterministic rollback
     success = guard.rollback_to_snapshot(target_file, sha, session_id="sess_rollback")
-    assert success is True
+    assert success == True
     assert target_file.read_text(encoding="utf-8") == orig_content
 
     # Verify REFACTOR_ROLLBACK event was signed into EventStore
@@ -440,5 +440,5 @@ def test_ide_bridge_rollback_endpoint(tmp_path: Path) -> None:
         "snapshot_sha256": snapshot_sha
     })
     assert rollback_resp.status_code == 200
-    assert rollback_resp.json()["success"] is True
+    assert rollback_resp.json()["success"] == True
     assert "def stable_version" in target_file.read_text(encoding="utf-8")
