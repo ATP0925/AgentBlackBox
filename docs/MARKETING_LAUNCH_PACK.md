@@ -16,7 +16,9 @@ All visual and multimedia assets have been generated and saved:
 | **Poster 1: Flight Recorder** | 1920x1080 (PNG) | `assets/posters/poster1_flight_recorder.png` | [View Poster 1](file:///C:/Users/atpad/AgentBlackBox/assets/posters/poster1_flight_recorder.png) |
 | **Poster 2: In-Memory PR Review Engine** | 1920x1080 (PNG) | `assets/posters/poster2_pr_review_engine.png` | [View Poster 2](file:///C:/Users/atpad/AgentBlackBox/assets/posters/poster2_pr_review_engine.png) |
 | **Poster 3: Universal Hooks** | 1920x1080 (PNG) | `assets/posters/poster3_universal_hooks.png` | [View Poster 3](file:///C:/Users/atpad/AgentBlackBox/assets/posters/poster3_universal_hooks.png) |
-| **Product Overview Video** | 1080p, 96s, AAC Audio (MP4) | `assets/video/agentblackbox_product_overview.mp4` | [Watch Video](file:///C:/Users/atpad/AgentBlackBox/assets/video/agentblackbox_product_overview.mp4) |
+| **NotebookLM Cinematic Video Overview** | 1080p, 6m 42s, AI Visual Storytelling (MP4) | `assets/video/agentblackbox_notebooklm_cinematic_overview.mp4` | [Watch NotebookLM Video](file:///C:/Users/atpad/AgentBlackBox/assets/video/agentblackbox_notebooklm_cinematic_overview.mp4) |
+| **NotebookLM Deep Dive Podcast** | 25m 56s, Two-Host AI Deep Dive (M4A) | `assets/audio/agentblackbox_notebooklm_deep_dive_podcast.m4a` | [Listen NotebookLM Podcast](file:///C:/Users/atpad/AgentBlackBox/assets/audio/agentblackbox_notebooklm_deep_dive_podcast.m4a) |
+| **Product Overview Teaser Video** | 1080p, 96s, AAC Audio (MP4) | `assets/video/agentblackbox_product_overview.mp4` | [Watch Video](file:///C:/Users/atpad/AgentBlackBox/assets/video/agentblackbox_product_overview.mp4) |
 | **Neural Voiceover Audio** | 24kHz Studio Neural Voice (MP3) | `agentblackbox_voiceover.mp3` | [Listen Audio](file:///C:/Users/atpad/AgentBlackBox/agentblackbox_voiceover.mp3) |
 
 ---

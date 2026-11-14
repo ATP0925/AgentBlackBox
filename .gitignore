@@ -49,6 +49,9 @@ blackbox_report_*
 *.key
 *.cert
 
+# Temp screenshots & downloads
+assets/notebooklm/
+
 # IDE & Local Agent Hooks
 .vscode/
 .idea/
