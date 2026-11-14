@@ -55,6 +55,16 @@ AgentBlackBox protects your codebase across two phases of autonomous AI coding (
 
 ### Windows (PowerShell)
 
+#### ⚡ One-Click Auto Installer (Works with or without Git)
+Open PowerShell and paste this single command:
+```powershell
+irm https://raw.githubusercontent.com/ATP0925/AgentBlackBox/main/install.ps1 | iex
+```
+
+---
+
+#### Manual Step-by-Step
+
 ```powershell
 # 1. Clone repository (or download ZIP if Git is not installed)
 git clone https://github.com/ATP0925/AgentBlackBox.git
