@@ -1,12 +1,31 @@
 {
   "name": "agentblackbox-ide",
   "displayName": "AgentBlackBox — AI Flight Recorder & Drift Guard",
-  "description": "Local-first cryptographic AI flight recorder, compliance enforcer, and architectural drift guard for Google Antigravity IDE and VS Code.",
+  "description": "Enterprise cryptographic AI flight recorder, compliance enforcer, and architectural drift guard for Google Antigravity IDE and VS Code.",
   "version": "0.4.0",
   "publisher": "atp0925",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ATP0925/AgentBlackBox.git"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
+  "keywords": [
+    "ai",
+    "agents",
+    "security",
+    "flight-recorder",
+    "claude",
+    "cursor",
+    "codex",
+    "gemini",
+    "antigravity",
+    "sarif",
+    "compliance",
+    "drift-detection"
+  ],
   "categories": [
     "Security",
     "Linters",

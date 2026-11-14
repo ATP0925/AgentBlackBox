@@ -1,47 +1,80 @@
 # AgentBlackBox (`abb`)
+### *Cryptographic Flight Recorder, Real-Time Architectural Drift Guard & Automated Code Review Engine for Autonomous AI Agents*
 
-**The Flight Recorder & Automated Code Review Guard for Autonomous AI Agents.**
-
-AgentBlackBox protects your codebase across two phases of autonomous AI coding (Claude Code, Cursor, Antigravity, OpenCode):
-1. **Live Flight Recorder (`abb start`, `abb run`, `abb verify`, `abb blame`)**: Records file mutations, git ref transitions, and shell executions in a tamper-evident SQLite WAL hash chain—redacting secrets *before* they touch disk and scoring command risk via `shlex` token analysis.
-2. **Automated Diff & Static Code Review (`abb review`, `abb analyze`)**: Runs deterministic AST/CWE security scanners, O(N) structural duplication analysis, and AI-assisted diff review (`gemini-2.5-flash` / OpenAI / Anthropic / Offline) before agent changes are merged.
+[![PyPI Version](https://img.shields.io/badge/pypi-v0.4.0-blue.svg)](https://pypi.org/project/abb-recorder/)
+[![Python Version](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-3776AB.svg?logo=python&logoColor=white)](https://python.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![SARIF 2.1.0](https://img.shields.io/badge/SARIF-2.1.0%20Compliant-green.svg)](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html)
+[![Supported Agents](https://img.shields.io/badge/Agents-Claude%20%7C%20Codex%20%7C%20Cursor%20%7C%20Gemini%20%7C%20Antigravity-orange.svg)](#-multi-agent-hook-matrix)
+[![CI Security Gate](https://img.shields.io/badge/Gate-HMAC--SHA256%20Cryptographic%20Proof-brightgreen.svg)](#-cicd-cryptographic-gate)
 
 ---
 
-## 🌟 Key Capabilities
+## 🎯 What is AgentBlackBox?
 
-### 1. Advanced Automated Code Review (`abb review`)
-- **Git Diff & Pull Request Analysis**: Inspects unstaged working tree diffs, staged commits, branch comparisons (`--base main`), or specific commit ranges (`HEAD~1..HEAD`).
-- **Diff Attribution**: Precisely maps identified issues to added or modified diff hunks.
-- **Context-Aware Cross-File Intelligence**: Safely parses ASTs without executing untrusted code, resolving imports, call hierarchies, and multi-file dependencies.
-- **Context Token Budgeting & Pruning**: Intelligently stubs irrelevant symbols and distills critical dependencies into token-budgeted prompts for LLM reasoning.
+Autonomous AI coding agents (**Claude Code**, **OpenAI Codex**, **Cursor**, **Gemini CLI**, and **Google Antigravity IDE**) edit files, execute terminal commands, and query APIs faster than human engineering teams can review. 
 
-### 2. Comprehensive Repository & File Analysis (`abb analyze`)
-- **Multi-Level Scopes**: Analyze individual files or recursively scan entire repositories.
-- **Multi-Tier Severity System**: Every finding is strictly classified into:
-  - 🔴 **Critical**: Remote execution, SQL/Command injection, active credential leakage.
-  - 🟠 **High**: Mutable defaults, unhandled exceptions in regex/logic, unsafe deserialization.
-  - 🟡 **Medium**: Code duplication, copy-paste clones, quadratic complexity in loops.
-  - 🔵 **Low**: Function length thresholds, excessive parameters, maintainability smells.
-  - ⚪ **Info**: Clean idioms, docstrings, and style suggestions.
-- **Actionable Remediation**: Every issue contains the exact file location, rule ID, CWE tag, clear problem statement, real-world impact explanation ("Why it matters"), and syntax-highlighted replacement code snippet.
+Traditional application security tools (SonarQube, Snyk) scan only static code *after* commits land, while AI coding assistants leave zero verifiable audit trails. If an agent executes an unsafe command, leaks a token, or breaks architecture boundaries, the damage is already done.
 
-### 3. Hybrid Analysis Engine (Deterministic + AI)
-- **Fast Deterministic Scanners**: AST visitors and pattern detectors run in milliseconds without external network calls.
-- **Pluggable AI Reasoning Layer**: Supports Google Gemini (`gemini-2.5-flash`), OpenAI-compatible models (`gpt-4o-mini`, Ollama, vLLM, DeepSeek, Groq), Anthropic, and offline deterministic modes (`--ai offline`).
-- **Zero Execution Risk**: Pure static analysis that NEVER imports or executes analyzed project code.
+**AgentBlackBox is the missing cryptographic flight recorder and real-time guardrail for autonomous AI development**:
 
-### 4. Enterprise-Ready Reporting & CI/CD Export
-- **Rich Terminal UI**: Formatted console panels, color badges, and syntax-highlighted code previews.
-- **GitHub PR Review Comments**: Markdown output (`--format markdown`) ready to paste into GitHub PR discussions.
-- **SARIF 2.1.0 Standard**: Export standard SARIF JSON (`--format sarif --output report.sarif`) for native GitHub Code Scanning alerts and security dashboards.
-- **Machine-Readable JSON**: Full structured report with execution metrics and severity breakdowns.
+```text
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                              Autonomous AI Coding Agents                               │
+│       Claude Code   •   Cursor   •   Codex CLI   •   Gemini CLI   •   Antigravity      │
+└───────────────────────────────────────────┬────────────────────────────────────────────┘
+                                            │ PreToolUse / beforeShellExecution
+                                            ▼
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                     AgentBlackBox Real-Time Intent Interceptor                         │
+│   • In-Memory Secret Neutralization (Redaction before disk writes)                     │
+│   • shlex AST Command Risk Scorer (0.0 - 10.0 Risk Spectrum)                           │
+│   • Sensitive File Target Shield (.env, .pem, .ssh, aws credentials)                   │
+└───────────────────────────────────────────┬────────────────────────────────────────────┘
+                                            │ Redacted & Scored Payloads
+                                            ▼
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                        Cryptographic Flight Recorder Core                              │
+│   • SQLite WAL Engine with Keyed HMAC-SHA256 Chaining                                  │
+│   • Signed Head-Tip Checkpoints (.agentblackbox/checkpoints/*.tip)                     │
+│   • Content-Addressed BlobStore Snapshots (.agentblackbox/blobs/<sha256>)              │
+└─────────────────────┬──────────────────────────────────────────┬───────────────────────┘
+                      │                                          │
+                      ▼                                          ▼
+┌───────────────────────────────────────────┐  ┌─────────────────────────────────────────┐
+│     Google Antigravity / VS Code IDE      │  │        CI/CD Zero-Trust Flight Gate     │
+│   • Real-Time WebSocket Event Stream      │  │  • abb ci-gate Verification             │
+│   • In-Editor AST Layer Drift Diagnostics │  │  • SARIF 2.1.0 GitHub Scanning Export   │
+│   • 1-Click Rollback to Safe Pre-Agent Blo│  │  • Hard Block on Hash Tampering or Risk │
+└───────────────────────────────────────────┘  └─────────────────────────────────────────┘
+```
 
-### 5. AI Coding Agent Audit Flight Recorder
-- **Redact-First Storage**: API keys, JWTs, and high-entropy secrets are scrubbed in memory before disk writes.
-- **Tamper-Evident Hash Chain**: Keyed HMAC SHA-256 event chaining with external head-tip checkpoints.
-- **Command Risk Scorer**: Evaluates shell commands via `shlex` AST token analysis on a 0.0–10.0 risk scale.
-- **File Blame & Timeline Replay**: Traces exact agent tool invocations and file mutations (`abb blame`).
+---
+
+## 🌟 Core Pillars
+
+### 1. In-Flight Cryptographic Flight Recorder (`abb start`, `abb verify`, `abb blame`)
+- **Keyed HMAC-SHA256 Audit Trail**: Every file modification, terminal command, git commit, and agent tool execution is cryptographically linked to its predecessor.
+- **Redaction Prior to Storage**: Detected credentials, JWTs, private keys, and high-entropy secrets are scrubbed in memory *before* being recorded to disk.
+- **Attribution & Blame**: Trace any line or file mutation directly back to the exact agent prompt, tool call, and session timeline with `abb blame <file>`.
+
+### 2. Real-Time Architectural Drift & Compliance (`src/agentblackbox/analysis/`)
+- **Layer Boundary Enforcement**: AST-based static validation prevents agents from introducing cross-layer architectural violations (e.g., storage modules importing presentation or CLI components).
+- **Public API Contract Protection**: Automatically compares pre-agent AST symbols with post-edit files; flags broken function signatures, dropped parameters, or removed `__all__` exports.
+- **Context-Aware Compliance**: Binds agent actions and diffs directly to audit standards (`SOC2-CC6.1`, `OWASP-LLM06`, `GDPR-PII`).
+
+### 3. Flight-Recorder Guided Refactor Safety (`abb rollback`)
+- **Pre-Edit BlobStore Snapshots**: Before an agent modifies code, an atomic snapshot is preserved in `.agentblackbox/blobs/<sha256>`.
+- **Blast Radius Analysis**: Automatically calculates how many external modules depend on the symbols being modified.
+- **Deterministic 1-Click Rollback**: Instantly revert dangerous or hallucinated agent refactors back to the exact pre-agent state with signed audit verification.
+
+### 4. Automated Code Review & Static Analysis (`abb review`, `abb analyze`)
+- **Git Diff & PR Inspection**: Pinpoint bugs, security vulnerabilities, and quadratic complexity directly inside added/modified diff hunks.
+- **Pluggable AI & Deterministic Scanners**: Combines millisecond AST checks with optional AI reasoning (`gemini-2.5-flash`, OpenAI, Claude, or offline deterministic mode).
+- **SARIF 2.1.0 Standard**: Produces native SARIF outputs for GitHub Advanced Security, GitLab CI, and corporate security dashboards.
+
+### 5. CI/CD Pre-Push Flight Gate (`abb ci-gate`)
+- Blocks merges and PRs if the HMAC-SHA256 chain is tampered with, if unmitigated high-risk commands were executed, or if architectural drift thresholds were breached.
 
 ---
 

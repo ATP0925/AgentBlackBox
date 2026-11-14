@@ -51,7 +51,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 app = typer.Typer(
     name="abb",
-    help="AgentBlackBox -- AI-powered code analysis, automated code review, and flight recorder.",
+    help="AgentBlackBox (abb) -- Cryptographic AI flight recorder, real-time architectural drift guard, and automated code review engine for autonomous agents.",
     no_args_is_help=True,
 )
 console = Console()

@@ -5,21 +5,43 @@ build-backend = "hatchling.build"
 [project]
 name = "abb-recorder"
 version = "0.4.0"
-description = "Local-first audit & replay flight recorder for AI coding agents — automatically redact secrets, track file & command diffs, score command risk, and verify session timelines."
+description = "Cryptographic flight recorder, real-time architectural drift guard, and automated code review engine for autonomous AI coding agents (Claude Code, Cursor, Codex, Gemini, Antigravity)."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [
-    { name = "Pratik Atpadkar" },
+    { name = "Pratik Atpadkar", email = "atpadkarmaruti@gmail.com" },
 ]
-keywords = ["ai-agents", "claude-code", "audit-log", "secret-detection", "flight-recorder", "security", "python", "observability"]
+keywords = [
+    "ai-agents",
+    "flight-recorder",
+    "claude-code",
+    "cursor",
+    "codex",
+    "gemini-cli",
+    "antigravity",
+    "code-review",
+    "drift-detection",
+    "audit-trail",
+    "hmac-sha256",
+    "sarif",
+    "devsecops",
+    "secret-detection",
+    "static-analysis",
+]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3.11",
-    "Topic :: Software Development :: Testing",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
 ]
 dependencies = [
     "watchdog>=4.0.0",
@@ -33,6 +55,11 @@ dependencies = [
     "structlog>=24.0.0",
     "keyring>=25.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/ATP0925/AgentBlackBox"
+Repository = "https://github.com/ATP0925/AgentBlackBox.git"
+Issues = "https://github.com/ATP0925/AgentBlackBox/issues"
 
 [project.optional-dependencies]
 dev = [
