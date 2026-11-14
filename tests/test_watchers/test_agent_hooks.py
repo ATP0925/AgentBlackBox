@@ -6,7 +6,12 @@ from pathlib import Path
 from agentblackbox.daemon.config import BlackBoxConfig
 from agentblackbox.storage.event_store import EventStore
 from agentblackbox.storage.models import EventType, Session, Severity
-from agentblackbox.watchers.agent_hooks import ingest_hook_payload, install_claude_hook
+from agentblackbox.watchers.agent_hooks import (
+    ingest_hook_payload,
+    install_agent_hook,
+    install_claude_hook,
+    UniversalIDECollector,
+)
 
 
 class TestAgentHooks:
@@ -23,6 +28,39 @@ class TestAgentHooks:
         data = json.loads(out_path.read_text(encoding="utf-8"))
         assert data["permissions"]["allow"] == ["Read"]
         assert len(data["hooks"]["PreToolUse"]) == 1
+
+    def test_install_agent_hook_supports_all_agents(self, tmp_path: Path) -> None:
+        (tmp_path / ".git").mkdir()
+        installed = install_agent_hook(tmp_path, agent="all")
+        assert "claude-code" in installed
+        assert "codex" in installed
+        assert "cursor" in installed
+        assert "antigravity" in installed
+        assert "git" in installed
+        assert (tmp_path / ".codex" / "hooks.json").exists()
+        assert (tmp_path / ".cursor" / "rules" / "agentblackbox.mdc").exists()
+        assert (tmp_path / ".gemini" / "rules" / "agentblackbox.md").exists()
+        assert (tmp_path / ".git" / "hooks" / "pre-commit").exists()
+
+    def test_universal_ide_collector_handles_codex_and_cursor(self) -> None:
+        codex_payload = {
+            "function": {
+                "name": "exec_command",
+                "arguments": json.dumps({"command": "pytest -q"}),
+            }
+        }
+        event = UniversalIDECollector.parse_hook_payload(codex_payload, source_hint="codex")
+        assert event.agent_source == "codex"
+        assert event.event_type == EventType.CMD_EXECUTE
+        assert event.target_resource == "pytest -q"
+
+        cursor_payload = {
+            "composerId": "comp_123",
+            "parameters": {"relativeWorkspacePath": "src/core.py"},
+        }
+        c_event = UniversalIDECollector.parse_hook_payload(cursor_payload, source_hint="cursor")
+        assert c_event.agent_source == "cursor"
+        assert c_event.target_resource == "src/core.py"
 
     def test_ingest_bash_and_write_tool_events(self, tmp_path: Path) -> None:
         config = BlackBoxConfig(workspace_path=tmp_path)

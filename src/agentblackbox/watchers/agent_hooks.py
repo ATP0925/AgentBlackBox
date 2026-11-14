@@ -60,6 +60,98 @@ def install_claude_hook(workspace: Path) -> Path:
     return settings_path
 
 
+def install_cursor_hook(workspace: Path) -> Path:
+    """Install Cursor IDE rules & safety guidelines into .cursor/rules/agentblackbox.mdc."""
+    rules_dir = workspace / ".cursor" / "rules"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    rule_file = rules_dir / "agentblackbox.mdc"
+    rule_file.write_text(
+        "---\n"
+        "description: AgentBlackBox Flight Recorder and Safety Rules for Cursor\n"
+        "globs: *\n"
+        "---\n\n"
+        "# AgentBlackBox Autonomous Agent Safety\n"
+        "- Run destructive or high-impact commands via `abb run --agent cursor \"<cmd>\"`.\n"
+        "- Verify workspace before final pull request with `abb review`.\n"
+        "- Secret scanning and risk telemetry are automatically recorded.\n",
+        encoding="utf-8",
+    )
+    return rule_file
+
+
+def install_codex_hook(workspace: Path) -> Path:
+    """Install OpenAI Codex CLI telemetry instructions and hook manifest."""
+    codex_dir = workspace / ".codex"
+    codex_dir.mkdir(parents=True, exist_ok=True)
+    hook_file = codex_dir / "hooks.json"
+    py_exe = Path(sys.executable).as_posix()
+    ws_str = workspace.resolve().as_posix()
+    hook_data = {
+        "agent": "codex",
+        "telemetry": "agentblackbox",
+        "pre_tool_hook": f'"{py_exe}" -m agentblackbox.watchers.agent_hooks --agent codex --workspace "{ws_str}"',
+        "review_cmd": "abb review",
+    }
+    hook_file.write_text(json.dumps(hook_data, indent=2) + "\n", encoding="utf-8")
+    return hook_file
+
+
+def install_antigravity_hook(workspace: Path) -> Path:
+    """Install Google Antigravity attribution & safety rules into .gemini/rules/agentblackbox.md."""
+    rules_dir = workspace / ".gemini" / "rules"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    rule_file = rules_dir / "agentblackbox.md"
+    rule_file.write_text(
+        "# AgentBlackBox Guidelines for Google Antigravity\n\n"
+        "- Tracked under AgentBlackBox flight recorder (agent: `antigravity`).\n"
+        "- Always run `abb review` or `abb analyze` to ensure 0 critical findings.\n",
+        encoding="utf-8",
+    )
+    return rule_file
+
+
+def install_git_hook(workspace: Path) -> Path:
+    """Install pre-commit hook into .git/hooks/pre-commit to review code automatically."""
+    git_dir = workspace / ".git" / "hooks"
+    git_dir.mkdir(parents=True, exist_ok=True)
+    hook_file = git_dir / "pre-commit"
+    py_exe = Path(sys.executable).as_posix()
+    hook_content = (
+        "#!/bin/sh\n"
+        "# AgentBlackBox automated pre-commit review\n"
+        f'"{py_exe}" -m agentblackbox.cli.main review --exit-zero\n'
+    )
+    hook_file.write_text(hook_content, encoding="utf-8")
+    return hook_file
+
+
+def install_agent_hook(workspace: Path, agent: str = "claude-code") -> Dict[str, Path]:
+    """Unified installer for Claude Code, OpenAI Codex, Cursor, Antigravity, and Git hooks."""
+    target = agent.lower().strip()
+    installed: Dict[str, Path] = {}
+
+    if target in ("all", "claude", "claude-code"):
+        installed["claude-code"] = install_claude_hook(workspace)
+
+    if target in ("all", "codex", "openai"):
+        installed["codex"] = install_codex_hook(workspace)
+
+    if target in ("all", "cursor"):
+        installed["cursor"] = install_cursor_hook(workspace)
+
+    if target in ("all", "antigravity", "gemini"):
+        installed["antigravity"] = install_antigravity_hook(workspace)
+
+    if target in ("all", "git", "pre-commit"):
+        if (workspace / ".git").exists():
+            installed["git"] = install_git_hook(workspace)
+
+    if not installed:
+        raise ValueError(f"Unknown agent '{agent}'. Supported: claude-code, codex, cursor, antigravity, git, all")
+
+    return installed
+
+
 def ingest_hook_payload(
     workspace: Path,
     payload: Dict[str, Any],
@@ -234,6 +326,35 @@ class UniversalIDECollector:
                 tool_name=tool_name,
                 target_resource=target,
                 raw_arguments=params,
+            )
+
+        if (
+            source_hint in ("codex", "openai")
+            or "codex" in str(payload.get("agent", "")).lower()
+            or "tool_call_id" in payload
+            or "codex_action" in payload
+            or ("function" in payload and isinstance(payload.get("function"), dict))
+        ):
+            fn = payload.get("function") if isinstance(payload.get("function"), dict) else payload
+            tool_name = str(fn.get("name") or payload.get("tool") or "codex_tool")
+            args = fn.get("arguments") or payload.get("args") or payload.get("parameters") or {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    args = {"raw": args}
+            target = str(args.get("file_path") or args.get("command") or args.get("path") or args.get("target") or "workspace")
+            ev_type = (
+                EventType.CMD_EXECUTE
+                if tool_name.lower() in ("bash", "shell", "exec_command", "run_command", "execute")
+                else EventType.FILE_MODIFY
+            )
+            return NormalizedAgentEvent(
+                agent_source="codex",
+                event_type=ev_type,
+                tool_name=tool_name,
+                target_resource=target,
+                raw_arguments=args,
             )
 
         tool_name = str(payload.get("tool") or payload.get("function") or "agent_step")

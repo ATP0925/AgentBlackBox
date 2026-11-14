@@ -208,6 +208,65 @@ class OpenAICompatibleProvider(BaseAIProvider):
             raise AIProviderError(f"OpenAI API request failed: {e}") from e
 
 
+class AnthropicAIProvider(BaseAIProvider):
+    """Provider for Anthropic Claude models (Claude 3.5 Sonnet, Claude 3.7 Sonnet)."""
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: str = "claude-3-5-sonnet-20241022",
+        timeout: float = 30.0,
+    ):
+        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        self.model = model
+        self.timeout = timeout
+
+        if not self.api_key:
+            raise AIProviderError("ANTHROPIC_API_KEY environment variable or argument is required.")
+
+    def generate_review(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        default_file: Optional[str] = None,
+    ) -> Tuple[str, List[Finding]]:
+        url = "https://api.anthropic.com/v1/messages"
+        payload = {
+            "model": self.model,
+            "max_tokens": 4096,
+            "system": system_prompt,
+            "messages": [
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.2,
+        }
+
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+        }
+
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                contents = result.get("content", [])
+                text = ""
+                for part in contents:
+                    if part.get("type") == "text":
+                        text += part.get("text", "")
+                return parse_ai_findings(text, default_file=default_file)
+        except urllib.error.URLError as e:
+            raise AIProviderError(f"Anthropic API request failed: {e}") from e
+
+
 def get_ai_provider(
     provider_name: Optional[str] = None,
     api_key: Optional[str] = None,
@@ -217,7 +276,7 @@ def get_ai_provider(
     """Factory to obtain configured AI provider or fallback to offline mock."""
     name = (provider_name or os.environ.get("ABB_AI_PROVIDER", "")).lower()
 
-    if name == "gemini" or (not name and os.environ.get("GEMINI_API_KEY")):
+    if name in ("gemini", "google") or (not name and os.environ.get("GEMINI_API_KEY")):
         try:
             return GeminiAIProvider(
                 api_key=api_key,
@@ -226,12 +285,22 @@ def get_ai_provider(
         except AIProviderError:
             return OfflineMockAIProvider()
 
-    if name in ("openai", "groq", "ollama", "deepseek") or (not name and os.environ.get("OPENAI_API_KEY")):
+    if name in ("anthropic", "claude") or (not name and os.environ.get("ANTHROPIC_API_KEY")):
         try:
+            return AnthropicAIProvider(
+                api_key=api_key,
+                model=model or "claude-3-5-sonnet-20241022",
+            )
+        except AIProviderError:
+            return OfflineMockAIProvider()
+
+    if name in ("openai", "codex", "groq", "ollama", "deepseek") or (not name and os.environ.get("OPENAI_API_KEY")):
+        try:
+            default_model = "gpt-4o" if name == "codex" else ("gpt-4o-mini" if name == "openai" else "llama3")
             return OpenAICompatibleProvider(
                 api_key=api_key,
                 base_url=base_url,
-                model=model or ("gpt-4o-mini" if name == "openai" else "llama3"),
+                model=model or default_model,
             )
         except AIProviderError:
             return OfflineMockAIProvider()

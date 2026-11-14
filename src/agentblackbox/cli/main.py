@@ -32,7 +32,7 @@ from agentblackbox.models.finding import Severity
 from agentblackbox.reporting.terminal import render_terminal_report
 from agentblackbox.storage.event_store import EventStore
 from agentblackbox.storage.models import Event, EventType, Session
-from agentblackbox.watchers.agent_hooks import install_claude_hook
+from agentblackbox.watchers.agent_hooks import install_claude_hook, install_agent_hook
 from agentblackbox.watchers.terminal import run_recorded_command
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -258,21 +258,23 @@ def run(
 
 @app.command("hook-install")
 def hook_install(
-    agent: str = typer.Option("claude-code", "--agent", "-a", help="Target agent (claude-code)"),
+    agent: str = typer.Option("all", "--agent", "-a", help="Target agent: claude-code, codex, cursor, antigravity, git, or all"),
     workspace: Optional[Path] = typer.Option(None, "--workspace", "-w"),
 ) -> None:
-    """Install agent attribution hooks (e.g., Claude Code PreToolUse hook)."""
+    """Install agent attribution and safety hooks across Claude Code, Codex, Cursor, Antigravity, and Git."""
     ws = workspace or Path.cwd()
-    if agent.lower() != "claude-code":
-        cli_abort(f"Unsupported agent '{agent}'. Currently supported: claude-code")
-    path = install_claude_hook(ws)
-    console.print(f"[bold green]✅ Installed Claude Code hook[/] at [cyan]{path}[/]")
+    try:
+        installed = install_agent_hook(ws, agent=agent)
+        for ag, path in installed.items():
+            console.print(f"[bold green]✅ Installed {ag} hook[/] at [cyan]{path}[/]")
+    except ValueError as exc:
+        cli_abort(str(exc))
 
 
 @app.command("hook-ingest")
 def hook_ingest(
     log_file: Optional[Path] = typer.Argument(None, help="Path to JSON/JSONL IDE log file"),
-    source: str = typer.Option("auto", "--source", "-s", help="Source agent (auto|claude_code|cursor|cline|antigravity)"),
+    source: str = typer.Option("auto", "--source", "-s", help="Source agent (auto|claude_code|codex|cursor|cline|antigravity)"),
     session_id: Optional[str] = typer.Option(None, "--session", help="Session ID to record events into"),
     workspace: Optional[Path] = typer.Option(None, "--workspace", "-w"),
 ) -> None:
@@ -619,7 +621,7 @@ def review(
     ai: Optional[str] = typer.Option(
         None,
         "--ai",
-        help="Enable AI reasoning layer: gemini, openai, anthropic, or offline",
+        help="Enable AI reasoning layer: gemini, openai, codex, anthropic, or offline",
     ),
     ai_model: Optional[str] = typer.Option(
         None,
@@ -742,7 +744,7 @@ def analyze(
     ai: Optional[str] = typer.Option(
         None,
         "--ai",
-        help="Enable AI reasoning layer: gemini, openai, anthropic, or offline",
+        help="Enable AI reasoning layer: gemini, openai, codex, anthropic, or offline",
     ),
     ai_model: Optional[str] = typer.Option(
         None,

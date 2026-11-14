@@ -93,3 +93,17 @@ def test_offline_mock_provider() -> None:
     assert findings[0].severity == Severity.CRITICAL
     assert findings[0].file_path == "src/target.py"
 
+
+def test_get_ai_provider_mappings(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agentblackbox.integrations.ai_provider import AnthropicAIProvider, OpenAICompatibleProvider
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    p_claude = get_ai_provider(provider_name="claude")
+    assert isinstance(p_claude, AnthropicAIProvider)
+    assert p_claude.api_key == "test-anthropic-key"
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    p_codex = get_ai_provider(provider_name="codex")
+    assert isinstance(p_codex, OpenAICompatibleProvider)
+    assert p_codex.model == "gpt-4o"
+

@@ -118,7 +118,39 @@ class UniversalIDECollector:
                 timestamp=now,
             )
 
-        # 4. Google Antigravity IDE / Generic MCP Agent format
+        # 4. OpenAI Codex / OpenAI Agent format
+        if (
+            source_hint in ("codex", "openai")
+            or "codex" in str(payload.get("agent", "")).lower()
+            or "tool_call_id" in payload
+            or "codex_action" in payload
+            or ("function" in payload and isinstance(payload.get("function"), dict))
+        ):
+            fn = payload.get("function") if isinstance(payload.get("function"), dict) else payload
+            tool_name = str(fn.get("name") or payload.get("tool") or "codex_tool")
+            args = fn.get("arguments") or payload.get("args") or payload.get("parameters") or {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    args = {"raw": args}
+            target = str(args.get("file_path") or args.get("command") or args.get("path") or args.get("target") or "workspace")
+            ev_type = (
+                "terminal_cmd"
+                if tool_name.lower() in ("bash", "shell", "exec_command", "run_command", "execute")
+                else "file_edit" if tool_name.lower() in ("apply_patch", "write_file", "edit_file", "replace_file_content")
+                else "tool_call"
+            )
+            return NormalizedAgentEvent(
+                agent_source="codex",
+                event_type=ev_type,
+                tool_name=tool_name,
+                target_resource=target,
+                raw_arguments=args,
+                timestamp=now,
+            )
+
+        # 5. Google Antigravity IDE / Generic MCP Agent format
         tool_name = str(
             payload.get("tool") or payload.get("function") or "agent_step"
         )

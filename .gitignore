@@ -36,6 +36,7 @@ checkpoints/
 *.db-wal
 *.db-shm
 blackbox_report_*
+*.sarif
 
 # IDE
 .vscode/
