@@ -1,6 +1,7 @@
 """Security & Privacy Module for AgentBlackBox GitHub App.
 
 Enforces cryptographic signature verification, prompt injection defense,
+adversarial unicode sanitation, strict model JSON-schema enforcement,
 and pre-analysis secret redaction.
 """
 
@@ -8,12 +9,17 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import re
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from agentblackbox.analysis.redactor import redact_secrets
 from agentblackbox.analysis.secret_detector import SecretDetector
 from agentblackbox.models.finding import Finding, Severity
+
+# Unicode characters commonly exploited in prompt injection, Trojan Source, or invisible payload attacks
+INVISIBLE_UNICODE_PATTERN = re.compile(r"[\u200B-\u200D\uFEFF\u200E\u200F]")
+BIDI_OVERRIDE_PATTERN = re.compile(r"[\u202A-\u202E\u2066-\u2069]")
 
 
 def verify_github_signature(
@@ -47,6 +53,7 @@ def verify_github_signature(
 def sanitize_prompt_input(untrusted_text: str, max_chars: int = 50000) -> str:
     """Sanitize and quarantine untrusted PR data (titles, bodies, diffs) against prompt injection.
 
+    - Strips invisible zero-width unicode characters and bidirectional Trojan Source overrides.
     - Truncates oversized input to guard against token exhaustion denial of service.
     - Strips dangerous control tokens and delimiter attempts.
     - Fences data into an explicit untrusted container with strict instructions.
@@ -61,8 +68,12 @@ def sanitize_prompt_input(untrusted_text: str, max_chars: int = 50000) -> str:
     if not untrusted_text:
         return ""
 
-    truncated = untrusted_text[:max_chars]
-    if len(untrusted_text) > max_chars:
+    # Neutralize invisible unicode & bidirectional override characters
+    sanitized = INVISIBLE_UNICODE_PATTERN.sub("", untrusted_text)
+    sanitized = BIDI_OVERRIDE_PATTERN.sub("", sanitized)
+
+    truncated = sanitized[:max_chars]
+    if len(sanitized) > max_chars:
         truncated += f"\n... [TRUNCATED - EXCEEDED {max_chars} CHARACTERS] ..."
 
     # Neutralize common LLM prompt escape / hijack sequences
@@ -75,6 +86,79 @@ def sanitize_prompt_input(untrusted_text: str, max_chars: int = 50000) -> str:
         f"{cleaned}\n"
         "</UNTRUSTED_PR_DATA>"
     )
+
+
+def validate_model_output(raw_output: str) -> Tuple[bool, List[Dict[str, Any]], str]:
+    """Strictly validate and parse LLM JSON output against the expected Review Finding schema.
+
+    Enforces that model responses contain ONLY declarative findings and cannot trigger
+    tool calls, webhooks, or arbitrary execution.
+
+    Returns:
+        Tuple of (is_valid, parsed_findings_list, summary_text).
+    """
+    if not raw_output or not raw_output.strip():
+        return False, [], "Empty model output"
+
+    # Extract JSON block if wrapped in markdown fences
+    text = raw_output.strip()
+    if "```json" in text:
+        match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
+        if match:
+            text = match.group(1).strip()
+    elif "```" in text:
+        match = re.search(r"```\s*(.*?)\s*```", text, re.DOTALL)
+        if match:
+            text = match.group(1).strip()
+
+    try:
+        data = json.loads(text)
+    except Exception as exc:
+        return False, [], f"JSON parsing failed: {exc}"
+
+    if not isinstance(data, dict):
+        return False, [], "Model output must be a JSON object"
+
+    summary = str(data.get("summary", "")).strip()
+    raw_findings = data.get("findings", [])
+    if not isinstance(raw_findings, list):
+        return False, [], "'findings' field must be an array"
+
+    validated_findings: List[Dict[str, Any]] = []
+    allowed_severities = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}
+
+    for item in raw_findings:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title", "")).strip()[:200]
+        file_path = str(item.get("file_path", "")).strip()
+        sev = str(item.get("severity", "MEDIUM")).upper().strip()
+        if sev not in allowed_severities:
+            sev = "MEDIUM"
+
+        try:
+            line_start = int(item.get("line_start", 1))
+        except (ValueError, TypeError):
+            line_start = 1
+
+        try:
+            line_end = int(item.get("line_end", line_start))
+        except (ValueError, TypeError):
+            line_end = line_start
+
+        validated_findings.append({
+            "title": title or "Code Finding",
+            "file_path": file_path,
+            "line_start": max(1, line_start),
+            "line_end": max(line_start, line_end),
+            "severity": sev,
+            "description": str(item.get("description", "")).strip(),
+            "suggestion": str(item.get("suggestion", "")).strip(),
+            "rule_id": str(item.get("rule_id", "AI-FINDING")).strip()[:32],
+            "confidence": min(1.0, max(0.0, float(item.get("confidence", 0.8)))),
+        })
+
+    return True, validated_findings, summary
 
 
 def redact_diff_secrets(

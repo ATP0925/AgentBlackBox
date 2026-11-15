@@ -21,13 +21,15 @@ def format_walkthrough(
     ai_summary: str = "",
     config_warnings: Optional[List[str]] = None,
     out_of_diff_findings: Optional[List[Finding]] = None,
+    receipt: Optional[Any] = None,
+    linked_session: Optional[Any] = None,
+    risk_breakdown: Optional[Any] = None,
 ) -> str:
     """Generate or update the top-level PR Walkthrough comment with hidden marker."""
     crit_count = sum(1 for f in findings if f.severity == Severity.CRITICAL)
     high_count = sum(1 for f in findings if f.severity == Severity.HIGH)
     med_count = sum(1 for f in findings if f.severity == Severity.MEDIUM)
     low_count = sum(1 for f in findings if f.severity in (Severity.LOW, Severity.INFO))
-    total_findings = len(findings)
 
     # Status badge
     if crit_count > 0:
@@ -41,7 +43,7 @@ def format_walkthrough(
 
     lines = [
         WALKTHROUGH_MARKER,
-        "## 🐰 AgentBlackBox AI Code Review & Audit",
+        "## 🛸 AgentBlackBox In-Memory Code Review & Flight Audit",
         f"{status_badge}  •  **PR #{pr_number}** (`{pr_title}`)  •  `{files_analyzed}` files analyzed  •  `{head_sha[:7]}`",
         "",
     ]
@@ -60,7 +62,38 @@ def format_walkthrough(
         lines.append("")
     else:
         lines.append("### 📝 Walkthrough & Summary")
-        lines.append(f"Automated audit completed for PR #{pr_number}: `{pr_title}`.")
+        lines.append(f"Automated in-memory audit completed for PR #{pr_number}: `{pr_title}`.")
+        lines.append("")
+
+    # PR Risk Score Breakdown
+    if risk_breakdown:
+        score_val = getattr(risk_breakdown, "total_score", None)
+        level_val = getattr(risk_breakdown, "risk_level", "LOW")
+        if score_val is not None:
+            color_icon = "🔴" if score_val >= 7.5 else ("🟠" if score_val >= 5.0 else ("🟡" if score_val >= 3.0 else "🟢"))
+            lines.extend([
+                "### 📈 Explainable PR Risk Score",
+                f"{color_icon} **Risk Index: {score_val:.1f} / 10.0** (`{level_val}`)",
+            ])
+            factors = getattr(risk_breakdown, "factors", [])
+            if factors:
+                for fct in factors[:5]:
+                    lines.append(f"- **{fct.get('factor')}**: {fct.get('path', '')} (+{fct.get('points', 0)} pts)")
+            lines.append("")
+
+    # Linked Agent Session Summary
+    if linked_session and getattr(linked_session, "session_id", None):
+        sess_icon = "🔴" if getattr(linked_session, "tamper_detected", False) else ("🟢" if getattr(linked_session, "is_valid", False) else "🟡")
+        lines.extend([
+            "### 🔗 Linked Agent Session Flight Log",
+            f"{sess_icon} **Session ID**: `{linked_session.session_id}` — {getattr(linked_session, 'verification_message', '')}",
+            f"- **Tools & Commands Executed**: {getattr(linked_session, 'tools_called', 0)} tool calls ({getattr(linked_session, 'commands_executed', 0)} shell commands)",
+            f"- **Files Changed in Dark**: {getattr(linked_session, 'files_modified', 0)} modified, {getattr(linked_session, 'files_deleted', 0)} deleted",
+            f"- **PreToolUse Blocks**: {getattr(linked_session, 'blocked_actions', 0)} unauthorized actions blocked by hooks",
+        ])
+        touched_tests = getattr(linked_session, "tests_touched", [])
+        if touched_tests:
+            lines.append(f"- **Tests Touched**: `{', '.join(touched_tests[:5])}`")
         lines.append("")
 
     # Severity overview table
@@ -94,10 +127,23 @@ def format_walkthrough(
             lines.append(f"- **{oof.file_path}:{oof.line_start}** [{oof.severity.name}] `{oof.rule_id}`: {oof.title} — {oof.description}")
         lines.append("")
 
+    # Cryptographic Signed Review Receipt Footer
+    if receipt and getattr(receipt, "receipt_id", None):
+        tip_hash = getattr(receipt, "chain_tip_hash", "")
+        tip_display = f"`{tip_hash[:16]}...`" if tip_hash else "*(unkeyed)*"
+        lines.extend([
+            "### 🔒 Cryptographic Review Receipt",
+            f"- **Receipt ID**: `{receipt.receipt_id}`",
+            f"- **Merkle Chain Root**: {tip_display} *(Sequence #{getattr(receipt, 'event_seq', 0)})*",
+            f"- **Provable Zero Retention**: Diff SHA-256 `{getattr(receipt, 'diff_hash', '')[:16]}...` (ephemeral RAM processing, 0 customer code stored)",
+            f"- **Offline Verification**: `abb verify-receipt {receipt.receipt_id}`",
+            "",
+        ])
+
     # Footer
     lines.extend([
         "---",
-        "> 💬 **Commands**: Mention `@agentblackbox review` to re-run, `@agentblackbox full review` for all files, or `@agentblackbox help` for commands.",
+        "> 💬 **Commands**: Mention `@agentblackbox review` to re-run, `@agentblackbox full review` for all files, `@agentblackbox pause` to pause, `@agentblackbox resume` to resume, or `@agentblackbox help`.",
     ])
 
     return "\n".join(lines)

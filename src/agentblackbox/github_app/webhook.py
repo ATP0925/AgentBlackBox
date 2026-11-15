@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Header, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
 import structlog
 
 from agentblackbox.github_app.auth import GitHubAppAuth
 from agentblackbox.github_app.client import GitHubClient
 from agentblackbox.github_app.events import GitHubEventHandler
-from agentblackbox.github_app.queue import IdempotencyStore, ReviewJobQueue
+from agentblackbox.github_app.installations import InstallationStore
+from agentblackbox.github_app.queue import IdempotencyStore, ReviewJobDescriptor, ReviewJobQueue
 from agentblackbox.github_app.security import verify_github_signature
 
 logger = structlog.get_logger(__name__)
@@ -24,6 +26,7 @@ auth_manager = GitHubAppAuth()
 github_client = GitHubClient(auth=auth_manager)
 job_queue = ReviewJobQueue(idempotency_store=IdempotencyStore(ttl_seconds=3600))
 event_handler = GitHubEventHandler(client=github_client)
+installation_store = InstallationStore()
 
 
 @router.get("/healthz")
@@ -40,6 +43,32 @@ async def readyz() -> dict:
         "app_configured": auth_manager.is_configured(),
         "app_id": auth_manager.app_id or "not_set",
     }
+
+
+@router.get("/metrics")
+async def metrics() -> dict:
+    """Observability metrics for background review queue and operations."""
+    stats = job_queue.get_queue_stats()
+    return {
+        "status": "healthy",
+        "active_jobs": stats["active_jobs"],
+        "total_jobs_tracked": stats["total_tracked"],
+        "dead_letter_count": stats["dead_letter_count"],
+        "dead_letters": job_queue.dead_letters[-10:],
+    }
+
+
+@router.get("/sarif/{owner}/{repo}/{pull_number}")
+async def get_pr_sarif(owner: str, repo: str, pull_number: int) -> JSONResponse:
+    """Download the latest SARIF v2.1.0 report for a reviewed pull request."""
+    key = (owner.lower(), repo.lower(), pull_number)
+    sarif = event_handler.latest_sarif_reports.get(key)
+    if not sarif:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No SARIF report available for {owner}/{repo} PR #{pull_number}",
+        )
+    return JSONResponse(content=sarif)
 
 
 @router.post("/webhook", status_code=status.HTTP_202_ACCEPTED)
@@ -96,13 +125,24 @@ async def handle_github_webhook(
         owner = repo_data.get("owner", {}).get("login", "")
         repo = repo_data.get("name", "")
         pull_number = pr_data.get("number")
+        head_sha = pr_data.get("head", {}).get("sha", "")
+        installation_id = payload.get("installation", {}).get("id")
 
         if owner and repo and pull_number:
+            descriptor = ReviewJobDescriptor(
+                owner=owner,
+                repo=repo,
+                pull_number=pull_number,
+                head_sha=head_sha,
+                delivery_id=delivery_id,
+                installation_id=installation_id,
+            )
             job_queue.enqueue_pr_review(
                 owner=owner,
                 repo=repo,
                 pull_number=pull_number,
                 coro_func=lambda: event_handler.handle_pull_request_event(payload),
+                descriptor=descriptor,
             )
             return Response(status_code=status.HTTP_202_ACCEPTED, content="Pull request review scheduled")
 
@@ -115,8 +155,38 @@ async def handle_github_webhook(
     # 4. Installation Lifecycle events
     if event_type in ("installation", "installation_repositories"):
         action = payload.get("action")
-        install_id = payload.get("installation", {}).get("id")
-        logger.info("installation_event", action=action, installation_id=install_id)
+        install_data = payload.get("installation", {})
+        install_id = install_data.get("id")
+        account = install_data.get("account", {})
+
+        if install_id:
+            if action == "created":
+                repos = [r.get("full_name") for r in payload.get("repositories", []) if r.get("full_name")]
+                installation_store.record_installation(
+                    installation_id=install_id,
+                    account_login=account.get("login", "unknown"),
+                    account_id=account.get("id", 0),
+                    account_type=account.get("type", "User"),
+                    repositories=repos,
+                )
+            elif action == "deleted":
+                installation_store.remove_installation(install_id)
+            elif action in ("added", "removed"):
+                added_repos = [r.get("full_name") for r in payload.get("repositories_added", []) if r.get("full_name")]
+                removed_repos = [r.get("full_name") for r in payload.get("repositories_removed", []) if r.get("full_name")]
+                installation_store.update_repositories(
+                    installation_id=install_id,
+                    added=added_repos,
+                    removed=removed_repos,
+                )
+
+        logger.info("installation_event_processed", action=action, installation_id=install_id)
         return Response(status_code=status.HTTP_202_ACCEPTED, content="Installation event recorded")
+
+    # 5. Review Comment & Reactions Feedback
+    if event_type == "pull_request_review_comment":
+        import asyncio
+        asyncio.create_task(event_handler.handle_review_comment_event(payload))
+        return Response(status_code=status.HTTP_202_ACCEPTED, content="Review feedback processed")
 
     return Response(status_code=status.HTTP_202_ACCEPTED, content="Event received")

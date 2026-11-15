@@ -1,7 +1,8 @@
 """GitHub PR Review Execution Engine.
 
 Bridges GitHub pull requests with AgentBlackBox's deterministic scanners,
-AI reasoning layer, compliance tracker, and architectural drift detector.
+AI reasoning layer, compliance tracker, architectural drift detector, and
+agent-misbehavior drift rules.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from agentblackbox.analysis.compliance_tracker import ComplianceTracker
 from agentblackbox.analysis.drift_detector import ArchitecturalDriftDetector
 from agentblackbox.core.config import ReviewConfig
 from agentblackbox.core.engine import ReviewEngine
+from agentblackbox.github_app.agent_drift import AgentMisbehaviorScanner, PRRiskScoreBreakdown
 from agentblackbox.github_app.config import AgentBlackBoxConfig
 from agentblackbox.github_app.diff import DiffMapper
 from agentblackbox.github_app.security import redact_diff_secrets
@@ -33,6 +35,7 @@ class PRReviewResult:
     drift_violations: List[Dict[str, Any]] = field(default_factory=list)
     ai_summary: str = ""
     files_analyzed: int = 0
+    risk_breakdown: Optional[PRRiskScoreBreakdown] = None
 
 
 class GitHubReviewRunner:
@@ -44,11 +47,13 @@ class GitHubReviewRunner:
         review_engine: Optional[ReviewEngine] = None,
         compliance_tracker: Optional[ComplianceTracker] = None,
         drift_detector: Optional[ArchitecturalDriftDetector] = None,
+        misbehavior_scanner: Optional[AgentMisbehaviorScanner] = None,
     ) -> None:
         self.config = config or AgentBlackBoxConfig()
         self.review_engine = review_engine or ReviewEngine(config=ReviewConfig())
         self.compliance_tracker = compliance_tracker or ComplianceTracker()
         self.drift_detector = drift_detector or ArchitecturalDriftDetector()
+        self.misbehavior_scanner = misbehavior_scanner or AgentMisbehaviorScanner()
 
     def deduplicate_against_existing_comments(
         self,
@@ -64,9 +69,6 @@ class GitHubReviewRunner:
         for c in existing_comments:
             c_path = (c.get("path") or "").replace("\\", "/").lstrip("/")
             c_line = c.get("line") or c.get("original_line") or 0
-            body = c.get("body") or ""
-            # Check for rule code in body e.g. `SEC-001`
-            match = re.search(r"`([A-Z0-9_-]{4,20})`", body)
             if c_path and c_line:
                 existing_keys.add((c_path, c_line))
 
@@ -88,6 +90,8 @@ class GitHubReviewRunner:
         raw_diff: str,
         pr_files_content: Optional[Dict[str, str]] = None,
         existing_comments: Optional[List[Dict[str, Any]]] = None,
+        pr_title: str = "",
+        pr_body: str = "",
     ) -> PRReviewResult:
         """Run complete security, AST, compliance, and drift analysis on a PR diff.
 
@@ -97,6 +101,8 @@ class GitHubReviewRunner:
             raw_diff: Unified diff string of the pull request.
             pr_files_content: Optional dictionary mapping {relative_file_path: file_content_str}.
             existing_comments: List of previous review comments to deduplicate against.
+            pr_title: Optional PR title.
+            pr_body: Optional PR description.
 
         Returns:
             PRReviewResult containing findings, compliance issues, drift, and AI summary.
@@ -108,20 +114,28 @@ class GitHubReviewRunner:
         # Step 1: In-memory Secret Redaction
         clean_diff, secret_findings = redact_diff_secrets(raw_diff)
 
-        # Step 2: AST & Domain Analysis via ReviewEngine
+        # Step 2: Agent-Misbehavior Drift Analysis
+        misbehavior_findings, risk_breakdown = self.misbehavior_scanner.scan_diff(
+            raw_diff=raw_diff,
+            pr_title=pr_title,
+            pr_body=pr_body,
+        )
+
+        # Step 3: AST & Domain Analysis via ReviewEngine
         all_findings: List[Finding] = list(secret_findings)
+        all_findings.extend(misbehavior_findings)
 
         # Build in-memory GitDiff for ReviewEngine
         parsed_git_diff = diff_mapper.git_diff
         try:
             report = self.review_engine.review_diff(parsed_git_diff)
             all_findings.extend(report.findings)
-            ai_summary = report.ai_summary
+            ai_summary = getattr(report, "ai_summary", getattr(report, "summary", "Automated in-memory diff analysis completed."))
         except Exception as exc:
             logger.warning("review_diff_error", error=str(exc))
-            ai_summary = "Automated diff analysis completed."
+            ai_summary = "Automated in-memory diff analysis completed."
 
-        # Step 3: Compliance & Drift Analysis on changed files
+        # Step 4: Compliance & Layer Boundary Analysis on changed files
         compliance_findings: List[Dict[str, Any]] = []
         drift_violations: List[Dict[str, Any]] = []
 
@@ -145,11 +159,11 @@ class GitHubReviewRunner:
                 except Exception as exc:
                     logger.debug("drift_check_skipped", file=file_path, error=str(exc))
 
-        # Step 4: Confidence & Severity Filtering
+        # Step 5: Confidence & Severity Filtering
         min_conf = self.config.reviews.min_confidence
         filtered_findings = [f for f in all_findings if f.confidence >= min_conf]
 
-        # Step 5: Deduplicate against existing comments
+        # Step 6: Deduplicate against existing comments
         if existing_comments:
             filtered_findings = self.deduplicate_against_existing_comments(filtered_findings, existing_comments)
 
@@ -159,4 +173,5 @@ class GitHubReviewRunner:
             drift_violations=drift_violations,
             ai_summary=ai_summary,
             files_analyzed=len(reviewable_files),
+            risk_breakdown=risk_breakdown,
         )

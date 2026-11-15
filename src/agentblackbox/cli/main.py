@@ -608,6 +608,44 @@ def verify(
         raise typer.Exit(1)
 
 
+@app.command("verify-receipt")
+def verify_receipt(
+    receipt_id: str = typer.Argument(..., help="Cryptographic review receipt ID (e.g. abb-rcpt-...)"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", "-w", help="Workspace containing .agentblackbox store"),
+) -> None:
+    """Verify cryptographic signed review receipt against local tamper-evident flight ledger."""
+    import os
+    from agentblackbox.github_app.receipts import ReviewReceiptManager
+
+    env_db = os.environ.get("ABB_DB_PATH")
+    if env_db and Path(env_db).exists():
+        db_path = Path(env_db)
+    elif workspace and workspace.is_file():
+        db_path = workspace
+    elif workspace and (workspace / "events.db").exists():
+        db_path = workspace / "events.db"
+    elif workspace and (workspace / "test_events.db").exists():
+        db_path = workspace / "test_events.db"
+    else:
+        ctx = CLIContext.resolve(workspace)
+        db_path = ctx.db_path
+
+    manager = ReviewReceiptManager(db_path=db_path)
+    is_valid, receipt, message = manager.verify_receipt(receipt_id)
+    if is_valid and receipt:
+        console.print(f"[bold green]✅ Cryptographic Receipt Verified[/]: [cyan]{receipt_id}[/]")
+        console.print(f"  Repository:    [bold]{receipt.owner}/{receipt.repo}[/] PR #{receipt.pull_number}")
+        console.print(f"  Commit SHA:    [yellow]{receipt.head_sha}[/]")
+        console.print(f"  Diff SHA-256:  [dim]{receipt.diff_hash}[/]")
+        console.print(f"  Merkle Tip:    [green]{receipt.chain_tip_hash}[/]")
+        console.print(f"  Findings:      {receipt.total_findings} ({receipt.critical_count} Critical, {receipt.high_count} High)")
+        console.print(f"  Model Engine:  {receipt.model_id}")
+        console.print(f"  Verification:  [bold]{message}[/]")
+    else:
+        console.print(f"[bold red]❌ Receipt Verification Failed[/]: {message}")
+        raise typer.Exit(1)
+
+
 @app.command()
 def serve(
     port: int = typer.Option(7700, "--port", "-p", help="Local port to bind"),

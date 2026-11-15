@@ -65,15 +65,23 @@ class Finding:
     file_path: str
     line_start: int
     line_end: int
-    category: str
-    message: str
-    why_it_matters: str
-    suggested_fix: str
-    rule_id: str
+    category: str = "security"
+    message: str = ""
+    why_it_matters: str = ""
+    suggested_fix: str = ""
+    rule_id: str = "ABB-FINDING"
     diff_hunk: Optional[str] = None
     cwe_id: Optional[str] = None
     confidence: float = 1.0
     metadata: Dict[str, Any] = field(default_factory=dict)
+    description_override: Optional[str] = field(default=None, repr=False)
+    suggestion_override: Optional[str] = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.description_override and not self.message:
+            self.message = self.description_override
+        if self.suggestion_override and not self.suggested_fix:
+            self.suggested_fix = self.suggestion_override
 
     @property
     def description(self) -> str:
@@ -93,5 +101,7 @@ class Finding:
     def to_dict(self) -> Dict[str, Any]:
         """Convert finding to standard dictionary."""
         d = asdict(self)
+        d.pop("description_override", None)
+        d.pop("suggestion_override", None)
         d["severity"] = self.severity.value
         return d
