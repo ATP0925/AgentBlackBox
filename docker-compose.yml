@@ -12,10 +12,25 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ABB_REDIS_URL=redis://redis:6379/0
+      - ABB_RATE_LIMIT_HOURLY=${ABB_RATE_LIMIT_HOURLY:-30}
+      - ABB_DAILY_BUDGET_USD=${ABB_DAILY_BUDGET_USD:-10.0}
+      - ABB_MONTHLY_BUDGET_USD=${ABB_MONTHLY_BUDGET_USD:-100.0}
       - ALLOWED_HOSTS=*
+    depends_on:
+      - redis
     volumes:
       - app_data:/home/appuser/.agentblackbox
     restart: unless-stopped
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
 volumes:
   app_data:
+  redis_data:

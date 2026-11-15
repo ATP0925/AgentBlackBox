@@ -76,6 +76,13 @@ Traditional application security tools (SonarQube, Snyk) scan only static code *
 ### 5. CI/CD Pre-Push Flight Gate (`abb ci-gate`)
 - Blocks merges and PRs if the HMAC-SHA256 chain is tampered with, if unmitigated high-risk commands were executed, or if architectural drift thresholds were breached.
 
+### 6. Production Hosted GitHub App (`abb github-app`, `abb verify-receipt`)
+- **In-Memory PR Reviews**: Posts one auto-updating Walkthrough comment, inline PR review comments with one-click ```suggestion blocks, and Check Runs with SARIF annotations.
+- **Signed Review Receipts**: Cryptographically seals review audits into the flight ledger (`diff_hash`, `config_hash`, finding hashes) with offline verification (`abb verify-receipt <id>`).
+- **Agent-Session Linkage**: Automatically binds pull requests to local agent sessions (`AgentBlackBox-Session: <id>`) to audit executed commands, file mutations, and blocked actions.
+- **Provable Zero Retention**: Customer source code is processed strictly in volatile RAM; diffs, comments, and secrets are never persisted to disk or databases (verified by automated canary CI tests).
+- **Agent-Misbehavior Drift Checks**: Detects deleted test assertions, skipped tests, CI workflow tampering, and linter suppressions with an explainable PR Risk Score.
+
 ---
 
 ## 🛡️ Feature Architecture Matrix (Why This Beats SonarQube, Snyk & Copilot)
@@ -307,7 +314,8 @@ src/agentblackbox/
 ├── storage/        # SQLite WAL EventStore with HMAC tamper-evident chaining
 ├── daemon/         # Background supervisor & atomic session management
 ├── watchers/       # Filesystem observer, terminal wrapper, and IDE hooks
-└── cli/            # Typer CLI application (`abb review`, `abb analyze`, `abb start`, etc.)
+├── github_app/     # Production GitHub App (Webhooks, Async Queue, Session Linker, Receipts, SARIF)
+├── cli/            # Typer CLI application (`abb review`, `abb analyze`, `abb start`, etc.)
 ```
 
 ---

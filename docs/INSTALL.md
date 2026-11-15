@@ -69,3 +69,64 @@ When testing locally without a public IP:
    npx smee-client -u https://smee.io/<channel> --target http://localhost:8000/github/webhook
    ```
 4. Test by opening or updating a PR on any repository where the app is installed!
+
+---
+
+## 🚀 Cloud Deployment Guides
+
+### A. Docker Compose (Self-Hosted with Redis)
+Start the complete stack with an asynchronous worker queue:
+```powershell
+# Windows PowerShell
+docker-compose up -d --build
+```
+```bash
+# Linux / macOS
+docker compose up -d --build
+```
+
+### B. Deploying to Render
+1. Create a new **Web Service** pointing to your repository.
+2. Set Environment: **Docker** (using the root `Dockerfile`).
+3. Add a Redis Instance: Create a Render Redis database and copy its internal connection string.
+4. Set Environment Variables:
+   - `ABB_REDIS_URL`: `redis://...`
+   - `GITHUB_APP_ID`: `<your-app-id>`
+   - `GITHUB_PRIVATE_KEY`: `<multiline-pem-content>`
+   - `GITHUB_WEBHOOK_SECRET`: `<your-webhook-secret>`
+   - `GEMINI_API_KEY`: `<your-key>`
+   - `PORT`: `8000`
+
+### C. Deploying to Fly.io
+1. Launch the app using `fly launch`.
+2. Attach a managed Redis instance: `fly redis create`.
+3. Set secrets:
+   ```bash
+   fly secrets set GITHUB_APP_ID="<app_id>" \
+                   GITHUB_WEBHOOK_SECRET="<secret>" \
+                   GITHUB_PRIVATE_KEY_PATH="<path-to-pem>" \
+                   GEMINI_API_KEY="<api-key>"
+   ```
+4. Deploy: `fly deploy`.
+
+### D. Deploying to Railway
+1. Click **New Project** &rarr; **Deploy from GitHub repo**.
+2. Add a **Redis Database** service in the project canvas.
+3. Reference Railway's `REDIS_URL` into `ABB_REDIS_URL`.
+4. Add the GitHub App variables into Environment Variables.
+
+---
+
+## 🧪 Testing Webhook Flow Offline
+
+You can replay webhooks locally with valid HMAC-SHA256 signatures:
+
+**PowerShell (Windows):**
+```powershell
+.\scripts\replay_webhook.ps1 -PayloadFile tests\fixtures\pr_opened.json -Event pull_request
+```
+
+**Bash / Python:**
+```bash
+python scripts/replay_webhook.py tests/fixtures/pr_opened.json --event pull_request
+```
