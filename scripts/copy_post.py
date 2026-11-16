@@ -24,7 +24,7 @@ When our lead dev woke up, the commit diff looked clean at a glance. We had zero
 
 We treat human developers with zero-trust: branch protections, code reviews, audit trails, and signed commits. But when an AI agent has shell access to our machines, we just cross our fingers and hope the system prompt doesn't hallucinate.
 
-That's why I built AgentBlackBox (ATP0925/AgentBlackBox).
+That's why DevSuperSuite built AgentBlackBox.
 
 It's an open-core cryptographic flight recorder and autonomous PR review engine built specifically for AI coding agents.
 

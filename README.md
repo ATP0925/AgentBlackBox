@@ -14,7 +14,7 @@
 
 Autonomous AI coding agents (**Claude Code**, **OpenAI Codex**, **Cursor**, **Gemini CLI**, and **Google Antigravity IDE**) edit files, execute terminal commands, and query APIs faster than human engineering teams can review. 
 
-Traditional application security tools (SonarQube, Snyk) scan only static code *after* commits land, while AI coding assistants leave zero verifiable audit trails. If an agent executes an unsafe command, leaks a token, or breaks architecture boundaries, the damage is already done.
+Traditional application security tools scan only static code *after* commits land, while generic AI coding assistants leave zero verifiable audit trails. If an agent executes an unsafe command, leaks a token, or breaks architecture boundaries, the damage is already done.
 
 **AgentBlackBox is the missing cryptographic flight recorder and real-time guardrail for autonomous AI development**:
 
@@ -85,9 +85,9 @@ Traditional application security tools (SonarQube, Snyk) scan only static code *
 
 ---
 
-## 🛡️ Feature Architecture Matrix (Why This Beats SonarQube, Snyk & Copilot)
+## 🛡️ Feature Architecture Matrix (Why AgentBlackBox Sets the Standard)
 
-| Capability | SonarQube / Snyk | GitHub Copilot | AgentBlackBox v0.4.0 + Antigravity Extension |
+| Capability | Traditional Static Scanners | Generic AI Assistants | AgentBlackBox + Flight Guard |
 | :--- | :--- | :--- | :--- |
 | **Cryptographic Audit Trail** | None (static point-in-time scan) | None (ephemeral chat logs) | **HMAC-SHA256 hash chain** + signed `.tip` checkpoints in `.agentblackbox/` |
 | **Context-Aware Compliance** | Static rule matching only | No compliance enforcement | **Links prompt + tool call + file diff** to `SOC2-CC6.1` / `OWASP-LLM06` with hash proofs |
