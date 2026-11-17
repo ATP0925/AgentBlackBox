@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "abb-recorder"
-version = "0.4.0"
-description = "Cryptographic flight recorder, real-time architectural drift guard, and automated code review engine for autonomous AI coding agents (Claude Code, Cursor, Codex, Gemini, Antigravity)."
+version = "0.5.0"
+description = "Cryptographic flight recorder, real-time architectural drift guard, and automated in-memory code review engine for autonomous AI coding agents."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -15,11 +15,7 @@ authors = [
 keywords = [
     "ai-agents",
     "flight-recorder",
-    "claude-code",
-    "cursor",
-    "codex",
-    "gemini-cli",
-    "antigravity",
+    "autonomous-agents",
     "code-review",
     "drift-detection",
     "audit-trail",
