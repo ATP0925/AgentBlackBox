@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import structlog
 
+from agentblackbox.github_app.autofix import AutoFixEngine, RemediationResult
 from agentblackbox.github_app.client import GitHubClient
 from agentblackbox.github_app.config import load_repo_config
 from agentblackbox.github_app.diff import DiffMapper
@@ -27,6 +28,7 @@ from agentblackbox.github_app.receipts import ReviewReceiptManager
 from agentblackbox.github_app.review_engine import GitHubReviewRunner
 from agentblackbox.github_app.sarif import generate_pr_sarif
 from agentblackbox.github_app.session_linker import AgentSessionLinker
+from agentblackbox.models.finding import Finding
 
 logger = structlog.get_logger(__name__)
 
@@ -42,6 +44,7 @@ class GitHubEventHandler:
         receipt_manager: Optional[ReviewReceiptManager] = None,
         session_linker: Optional[AgentSessionLinker] = None,
         feedback_store: Optional[FeedbackStore] = None,
+        autofix_engine: Optional[AutoFixEngine] = None,
     ) -> None:
         self.client = client
         self.review_runner = review_runner or GitHubReviewRunner()
@@ -49,10 +52,13 @@ class GitHubEventHandler:
         self.receipt_manager = receipt_manager or ReviewReceiptManager()
         self.session_linker = session_linker or AgentSessionLinker()
         self.feedback_store = feedback_store or FeedbackStore()
+        self.autofix_engine = autofix_engine or AutoFixEngine(client=self.client)
         # Track last reviewed SHA: {(owner, repo, pull_number): sha}
         self._last_reviewed_sha: Dict[Tuple[str, str, int], str] = {}
         # In-memory store for generated SARIF reports: {(owner, repo, pull_number): sarif_doc}
         self.latest_sarif_reports: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
+        # In-memory cache of findings from latest review for 1-click remediation: {(owner, repo, pull_number): findings}
+        self.latest_review_findings: Dict[Tuple[str, str, int], List[Finding]] = {}
 
     async def handle_review_comment_event(self, payload: Dict[str, Any]) -> None:
         """Handle review comment reactions (+1, -1, confused) for quality calibration."""
@@ -350,6 +356,7 @@ class GitHubEventHandler:
 
             # Update tracked last reviewed SHA & record rate usage
             self._last_reviewed_sha[pr_key] = head_sha
+            self.latest_review_findings[pr_key] = list(review_res.findings)
             if installation_id:
                 self.limiter.record_review_completion(installation_id)
 
@@ -395,6 +402,7 @@ class GitHubEventHandler:
         if "help" in body:
             help_text = (
                 "### 🛸 AgentBlackBox Bot Commands\n"
+                "- `@agentblackbox fix`: Automatically generate a remediation PR with safe 1-click fixes for active findings.\n"
                 "- `@agentblackbox review`: Re-run automated review on the latest commit.\n"
                 "- `@agentblackbox full review`: Force full analysis of all changed files without cache.\n"
                 "- `@agentblackbox pause`: Temporarily pause automated PR reviews on this pull request.\n"
@@ -409,6 +417,61 @@ class GitHubEventHandler:
                 body=help_text,
                 installation_id=installation_id,
             )
+            return
+
+        pr_key = (owner.lower(), repo.lower(), pull_number)
+
+        if "fix" in body or "autofix" in body:
+            try:
+                pr = await self.client.get_pull_request(owner=owner, repo=repo, pull_number=pull_number, installation_id=installation_id)
+                head_sha = pr.get("head", {}).get("sha", "")
+                head_branch = pr.get("head", {}).get("ref", "main")
+
+                findings = self.latest_review_findings.get(pr_key, [])
+                if not findings:
+                    # Scan diff on-demand if no cached findings
+                    raw_diff = await self.client.get_pull_request_diff(owner=owner, repo=repo, pull_number=pull_number, installation_id=installation_id)
+                    res = await self.review_runner.execute_review(raw_diff=raw_diff, pr_title=pr.get("title", ""))
+                    findings = res.findings
+                    self.latest_review_findings[pr_key] = findings
+
+                remediation = await self.autofix_engine.create_remediation_pr(
+                    owner=owner,
+                    repo=repo,
+                    pull_number=pull_number,
+                    head_sha=head_sha,
+                    head_branch=head_branch,
+                    findings=findings,
+                    installation_id=installation_id,
+                )
+
+                if remediation.success and remediation.pr_url:
+                    comment_body = (
+                        f"✅ **Automated Remediation PR Created!**\n\n"
+                        f"- **Fix PR**: [{remediation.pr_url}]({remediation.pr_url})\n"
+                        f"- **Branch**: `{remediation.branch_name}`\n"
+                        f"- **Applied**: {remediation.applied_fixes_count} fix(es) across `{len(remediation.modified_files)}` file(s).\n\n"
+                        f"Review the diff and merge into `{head_branch}` to apply."
+                    )
+                else:
+                    comment_body = f"ℹ️ **AgentBlackBox AutoFix**: {remediation.message}"
+
+                await self.client.create_issue_comment(
+                    owner=owner,
+                    repo=repo,
+                    issue_number=pull_number,
+                    body=comment_body,
+                    installation_id=installation_id,
+                )
+            except Exception as exc:
+                logger.error("autofix_execution_failed", error=str(exc))
+                await self.client.create_issue_comment(
+                    owner=owner,
+                    repo=repo,
+                    issue_number=pull_number,
+                    body=f"❌ Failed to generate automated remediation: {exc}",
+                    installation_id=installation_id,
+                )
             return
 
         if "pause" in body:

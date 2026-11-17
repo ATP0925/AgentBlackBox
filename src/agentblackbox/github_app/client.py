@@ -305,3 +305,103 @@ class GitHubClient:
             installation_id=installation_id,
             json_data=payload,
         )
+
+    async def create_branch(
+        self,
+        owner: str,
+        repo: str,
+        branch: str,
+        sha: str,
+        installation_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Create a new Git branch ref from a specific commit SHA."""
+        payload = {
+            "ref": f"refs/heads/{branch}",
+            "sha": sha,
+        }
+        return await self._request(
+            "POST",
+            f"repos/{owner}/{repo}/git/refs",
+            installation_id=installation_id,
+            json_data=payload,
+            expected_status=(201, 200),
+        )
+
+    async def get_file_metadata(
+        self,
+        owner: str,
+        repo: str,
+        path: str,
+        ref: str,
+        installation_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch raw metadata (including blob SHA) for a repository file."""
+        try:
+            return await self._request(
+                "GET",
+                f"repos/{owner}/{repo}/contents/{path.lstrip('/')}",
+                installation_id=installation_id,
+                params={"ref": ref},
+                expected_status=(200, 404),
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
+
+    async def update_file_contents(
+        self,
+        owner: str,
+        repo: str,
+        path: str,
+        content: str,
+        message: str,
+        branch: str,
+        sha: Optional[str] = None,
+        installation_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Create or update a file in a Git branch using base64 encoding."""
+        encoded = base64.b64encode(content.encode("utf-8")).decode("utf-8")
+        payload: Dict[str, Any] = {
+            "message": message,
+            "content": encoded,
+            "branch": branch,
+        }
+        if sha:
+            payload["sha"] = sha
+
+        return await self._request(
+            "PUT",
+            f"repos/{owner}/{repo}/contents/{path.lstrip('/')}",
+            installation_id=installation_id,
+            json_data=payload,
+            expected_status=(200, 201),
+        )
+
+    async def create_pull_request(
+        self,
+        owner: str,
+        repo: str,
+        title: str,
+        body: str,
+        head: str,
+        base: str,
+        draft: bool = False,
+        installation_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Open a new Pull Request."""
+        payload = {
+            "title": title,
+            "body": body,
+            "head": head,
+            "base": base,
+            "draft": draft,
+        }
+        return await self._request(
+            "POST",
+            f"repos/{owner}/{repo}/pulls",
+            installation_id=installation_id,
+            json_data=payload,
+            expected_status=(201, 200),
+        )
+
