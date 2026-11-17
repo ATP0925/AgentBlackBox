@@ -6,9 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.5.0] - 2026-11-16
+## [0.5.0] - 2026-11-17
 
 ### Added
+- **Automated 1-Click Fix PR Generator (`@agentblackbox fix`)**:
+  - Full issue comment trigger (`@agentblackbox fix` / `@agentblackbox autofix`).
+  - In-memory patch engine applying suggested fixes in descending line order to preserve line offsets.
+  - Automated branching from PR head (`agentblackbox/autofix-pr-<num>-<uuid>`).
+  - GitHub Git Data API commits with signed commit trailers.
+  - Opening of clean, ready-to-merge remediation PRs into the PR head branch.
+- **GitHub Marketplace Listing Readiness (`MARKETPLACE.md`)**:
+  - Marketplace metadata, category classification, and feature breakdown.
+  - 3-tier pricing plan specification (Community Free, Team Pro, Enterprise Dedicated).
 - **Production Hosted GitHub App**:
   - 1-Click App Manifest registration workflow (`/github/manifest` & `/github/manifest/callback`).
   - Automated credential persistence to `.env` with restricted operating system permissions.
