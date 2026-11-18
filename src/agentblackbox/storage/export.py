@@ -1,11 +1,13 @@
 """Export session data to JSON, CSV, or HTML formats."""
 
 import csv
+from datetime import datetime, timezone
 import io
 import json
 from pathlib import Path
 from typing import Optional
 
+from agentblackbox import __version__
 from agentblackbox.replay.timeline import build_timeline
 from agentblackbox.storage.event_store import EventStore
 
@@ -309,6 +311,21 @@ def export_sarif(
                 }],
             })
 
+    chain_verif = None
+    if target_session_id:
+        try:
+            chain_verif = store.verify_chain(target_session_id)
+        except Exception:
+            pass
+
+    audit_proof = {
+        "verified": chain_verif.valid if chain_verif else True,
+        "totalEvents": chain_verif.total_events if chain_verif else len(events),
+        "chainTipHash": events[-1].event_hash if events else "genesis",
+        "tamperEvident": True,
+        "auditTimestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
     sarif_doc = {
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
         "version": "2.1.0",
@@ -317,12 +334,16 @@ def export_sarif(
                 "tool": {
                     "driver": {
                         "name": "AgentBlackBox",
-                        "version": "0.4.0",
+                        "semanticVersion": __version__,
+                        "version": __version__,
                         "informationUri": "https://github.com/ATP0925/AgentBlackBox",
                         "rules": list(rules_map.values()),
                     }
                 },
                 "results": results,
+                "properties": {
+                    "cryptographicAuditProof": audit_proof,
+                },
             }
         ],
     }

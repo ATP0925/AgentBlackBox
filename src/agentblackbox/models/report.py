@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from agentblackbox import __version__
 from agentblackbox.models.finding import Finding, Severity
 
 
@@ -159,7 +160,8 @@ class ReviewReport:
                     "tool": {
                         "driver": {
                             "name": "AgentBlackBox Code Review",
-                            "version": "0.3.0",
+                            "semanticVersion": __version__,
+                            "version": __version__,
                             "rules": list(rules_dict.values()),
                         }
                     },

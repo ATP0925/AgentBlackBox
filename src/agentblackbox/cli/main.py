@@ -7,6 +7,8 @@ import shlex
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+import hashlib
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -491,12 +493,12 @@ def blame(
 @app.command()
 def report(
     session_id: str = typer.Argument(..., help="Session ID to export"),
-    format: str = typer.Option("html", "--format", "-f", help="Output format: json, csv, html"),
+    format: str = typer.Option("html", "--format", "-f", help="Output format: json, csv, html, sarif"),
     output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output file path"),
     workspace: Optional[Path] = typer.Option(None, "--workspace", "-w"),
 ) -> None:
-    """Export a session report."""
-    from agentblackbox.storage.export import export_json, export_csv, export_html
+    """Export a session report in JSON, CSV, HTML, or SARIF v2.1.0."""
+    from agentblackbox.storage.export import export_json, export_csv, export_html, export_sarif
 
     store = _get_store(workspace)
 
@@ -504,10 +506,11 @@ def report(
         "json": export_json,
         "csv": export_csv,
         "html": export_html,
+        "sarif": lambda s, sid: json.dumps(export_sarif(s, sid), indent=2),
     }
 
     if format not in exporters:
-        console.print(f"[red]Unknown format: {format}. Use json, csv, or html.[/]")
+        console.print(f"[red]Unknown format: {format}. Use json, csv, html, or sarif.[/]")
         raise typer.Exit(1)
 
     content = exporters[format](store, session_id)
@@ -521,6 +524,202 @@ def report(
         out_path = Path(f"blackbox_report_{session_id[:12]}.{ext}")
         out_path.write_text(content, encoding="utf-8")
         console.print(f"[green]Report saved to {out_path}[/]")
+
+
+@app.command()
+def audit(
+    session_id: Optional[str] = typer.Argument(
+        None,
+        help="Session ID to audit (defaults to latest active session if omitted)",
+    ),
+    format: str = typer.Option(
+        "terminal",
+        "--format",
+        "-f",
+        help="Output format: terminal, markdown, json, sarif",
+    ),
+    output: Optional[Path] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Write audit report directly to file path",
+    ),
+    workspace: Optional[Path] = typer.Option(
+        None,
+        "--workspace",
+        "-w",
+        help="Workspace root containing .agentblackbox store",
+    ),
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help="Exit with non-zero code if hash-chain tampering or critical findings exist",
+    ),
+) -> None:
+    """Audit agent flight records, verify cryptographic Merkle chain, and generate compliance audit proof."""
+    from agentblackbox.storage.export import export_sarif
+
+    store = _get_store(workspace)
+    target_sid = session_id
+    if not target_sid:
+        sessions_list = store.list_sessions(limit=1)
+        if not sessions_list:
+            console.print("[yellow]No recorded sessions found to audit.[/]")
+            return
+        target_sid = sessions_list[0].id
+
+    session = store.get_session(target_sid)
+    if not session:
+        console.print(f"[red]Session '{target_sid}' not found.[/]")
+        raise typer.Exit(1)
+
+    chain_res = store.verify_chain(target_sid)
+    events = store.query_events(session_id=target_sid, limit=50000)
+    alerts = store.get_alerts(session_id=target_sid, unacked_only=False)
+
+    secret_findings = []
+    compliance_findings = []
+    drift_violations = []
+    high_risk_cmds = []
+
+    for ev in events:
+        p = ev.payload if isinstance(ev.payload, dict) else {}
+        if ev.event_type == "secret_detected" or p.get("secret_matches"):
+            matches = p.get("secret_matches", [])
+            for m in matches:
+                secret_findings.append({
+                    "event_id": ev.id,
+                    "seq": ev.seq,
+                    "file": ev.source_path,
+                    "match": m if isinstance(m, str) else m.get("pattern_name", "secret"),
+                })
+        if "compliance_findings" in p and isinstance(p["compliance_findings"], list):
+            compliance_findings.extend(p["compliance_findings"])
+        if "drift_violations" in p and isinstance(p["drift_violations"], list):
+            drift_violations.extend(p["drift_violations"])
+        if ev.risk_score >= 7.0 and ev.event_type in ("cmd_execute", "git_force_push", "git_reset"):
+            high_risk_cmds.append({
+                "seq": ev.seq,
+                "command": p.get("command", ""),
+                "risk": ev.risk_score,
+            })
+
+    tip_hash = events[-1].event_hash if events else "genesis"
+    attestation = hashlib.sha256(
+        f"{target_sid}:{chain_res.valid}:{chain_res.total_events}:{tip_hash}".encode("utf-8")
+    ).hexdigest()
+
+    audit_summary = {
+        "session_id": target_sid,
+        "session_name": session.name,
+        "status": "PASS" if chain_res.valid else "FAIL",
+        "tamper_evident": True,
+        "chain_intact": chain_res.valid,
+        "broken_at_seq": chain_res.broken_at_seq,
+        "failure_reason": chain_res.reason,
+        "total_events_verified": chain_res.total_events,
+        "merkle_tip_hash": tip_hash,
+        "cryptographic_attestation": attestation,
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "summary": {
+            "secrets_detected": len(secret_findings),
+            "compliance_findings": len(compliance_findings),
+            "drift_violations": len(drift_violations),
+            "high_risk_commands": len(high_risk_cmds),
+            "alerts_recorded": len(alerts),
+        },
+        "findings": {
+            "secrets": secret_findings,
+            "compliance": compliance_findings,
+            "drift": drift_violations,
+            "high_risk_commands": high_risk_cmds,
+        },
+    }
+
+    fmt = format.lower()
+    if fmt == "terminal":
+        status_style = "bold green" if chain_res.valid else "bold red"
+        status_text = "VERIFIED INTACT (0 Tampering)" if chain_res.valid else f"TAMPERED (Seq #{chain_res.broken_at_seq})"
+
+        t = Table(title="🔒 Agent Flight Recording Cryptographic Audit Proof", show_header=False)
+        t.add_column("Property", style="bold cyan")
+        t.add_column("Value", style="white")
+        t.add_row("Session ID", target_sid)
+        t.add_row("Session Name", session.name)
+        t.add_row("Cryptographic Integrity", f"[{status_style}]{status_text}[/]")
+        t.add_row("Merkle Root Tip", f"[dim]{tip_hash}[/]")
+        t.add_row("Audit Seal (SHA-256)", f"[yellow]{attestation[:24]}...[/]")
+        t.add_row("Events Audited", str(chain_res.total_events))
+        t.add_row("Secrets Detected", f"[red]{len(secret_findings)}[/]" if secret_findings else "[green]0[/]")
+        t.add_row("Compliance Drift", f"[yellow]{len(drift_violations)}[/]" if drift_violations else "[green]0[/]")
+        t.add_row("High-Risk Commands", f"[red]{len(high_risk_cmds)}[/]" if high_risk_cmds else "[green]0[/]")
+        t.add_row("Recorded Alerts", f"[yellow]{len(alerts)}[/]" if alerts else "[green]0[/]")
+        console.print(t)
+
+        if not chain_res.valid:
+            console.print(f"[bold red]❌ Chain Failure Reason:[/] {chain_res.reason}")
+
+        if output:
+            output.write_text(json.dumps(audit_summary, indent=2), encoding="utf-8")
+            console.print(f"[dim]Audit summary saved to {output}[/]")
+
+    elif fmt == "markdown":
+        md_lines = [
+            f"# 🔒 Cryptographic Audit Proof — Session `{target_sid}`",
+            "",
+            f"**Audit Status**: `{'PASS - INTACT' if chain_res.valid else 'FAIL - TAMPERED'}`  ",
+            f"**Merkle Chain Root Tip**: `{tip_hash}`  ",
+            f"**Cryptographic Seal (SHA-256)**: `{attestation}`  ",
+            f"**Verified Event Count**: `{chain_res.total_events}`  ",
+            f"**Timestamp (UTC)**: `{audit_summary['timestamp_utc']}`  ",
+            "",
+            "## 🛡️ Security & Drift Metrics",
+            f"- **Secrets Detected**: {len(secret_findings)}",
+            f"- **Compliance Drift Violations**: {len(drift_violations)}",
+            f"- **High-Risk Agent Actions**: {len(high_risk_cmds)}",
+            f"- **Alerts Recorded**: {len(alerts)}",
+            "",
+        ]
+        if secret_findings:
+            md_lines.append("### ⚠️ Secret Detections")
+            for sf in secret_findings:
+                md_lines.append(f"- Seq #{sf['seq']} in `{sf['file']}`: `{sf['match']}`")
+            md_lines.append("")
+        if drift_violations:
+            md_lines.append("### ⚠️ Drift Violations")
+            for dv in drift_violations:
+                md_lines.append(f"- {dv.get('rule_code')}: {dv.get('description')}")
+            md_lines.append("")
+
+        md_content = "\n".join(md_lines)
+        if output:
+            output.write_text(md_content, encoding="utf-8")
+            console.print(f"[green]Markdown audit proof written to {output}[/]")
+        else:
+            print(md_content)
+
+    elif fmt == "json":
+        data = json.dumps(audit_summary, indent=2)
+        if output:
+            output.write_text(data, encoding="utf-8")
+            console.print(f"[green]JSON audit proof written to {output}[/]")
+        else:
+            print(data)
+
+    elif fmt == "sarif":
+        sarif_doc = export_sarif(store, session_id=target_sid, output_path=output)
+        sarif_str = json.dumps(sarif_doc, indent=2)
+        if not output:
+            print(sarif_str)
+        else:
+            console.print(f"[green]SARIF v2.1.0 audit proof written to {output}[/]")
+
+    else:
+        console.print(f"[red]Unknown format: {format}. Use terminal, markdown, json, or sarif.[/]")
+        raise typer.Exit(1)
+
+    if strict and (not chain_res.valid or len(secret_findings) > 0):
+        raise typer.Exit(1)
 
 
 @app.command()
